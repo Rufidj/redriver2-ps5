@@ -64,7 +64,10 @@ cp scripts/env.sh.example scripts/env.sh      # edit the paths and the console I
 modify anything else in the boilerplate.
 
 Put the title's artwork in `ps5/app/sce_sys/` if you want it: `icon0.png` (512x512) and optionally `pic0.dds` /
-`pic1.dds` (backgrounds). They are not included because they are derived from the game's artwork.
+`pic1.dds` (backgrounds, 3840x2160 BC7). They are not included because they are derived from the game's artwork.
+The music the home screen plays while the title is selected is `snd0.at9` (48 kHz ATRAC9, at most 2 MiB):
+`scripts/make-snd0.sh song.mp3 /path/to/ps4_at9tool.exe` builds it. The encoder is a Sony tool and is not included;
+the song is yours to supply.
 
 ## Game data
 
@@ -126,7 +129,7 @@ patches/        0001 = REDRIVER2 game code, 0002 = PsyCross (the PlayStation lay
 ps5/app/        the PS5 title: src (heap, file/save glue, GL stubs), sce_sys/param.json
 ps5/build/      Makefile (game -> libred2.a), software OpenAL, compatibility headers, FTP deploy script, bundled third-party sources
 ps5/assets/     the default config.ini
-scripts/        setup.sh, build.sh, make-patches.sh, env.sh.example
+scripts/        setup.sh, build.sh, make-patches.sh, make-snd0.sh, env.sh.example
 docs/           NOTES.md (what was learnt about the console), SHADOWS.md (shadow design)
 ```
 
