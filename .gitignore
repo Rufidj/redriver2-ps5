@@ -1,0 +1,9 @@
+REDRIVER2/
+ps5/build/obj/
+ps5/build/libred2.a
+ps5/app/libs/
+ps5/app/assets/
+ps5/app/sce_sys/*.png
+ps5/app/sce_sys/*.dds
+scripts/env.sh
+*.log

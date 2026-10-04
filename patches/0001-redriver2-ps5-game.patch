@@ -1,0 +1,1604 @@
+diff --git a/src_rebuild/Game/ASM/rndrasm.c b/src_rebuild/Game/ASM/rndrasm.c
+index 3ed7af1..2b835a3 100644
+--- a/src_rebuild/Game/ASM/rndrasm.c
++++ b/src_rebuild/Game/ASM/rndrasm.c
+@@ -46,10 +46,18 @@ int Apply_InvCameraMatrixSetTrans(VECTOR_NOPAD* pos)
+ 	MATRIX& lc = inv_camera_matrix;
+ 	//gte_ReadColorMatrix(&lc);	// in general this is a inv_camera_matrix
+ 
++#ifdef __PROSPERO__
++	// full 32-bit difference: the 16-bit SVECTOR above wraps beyond +-32768 units (16 cells)
++	long long lx = (long long)pos->vx - vfc.vx, ly = (long long)pos->vy - vfc.vy, lz = (long long)pos->vz - vfc.vz;
++	vec.vx = (int)((lc.m[0][0] * lx + lc.m[0][1] * ly + lc.m[0][2] * lz) >> 12);
++	vec.vy = (int)((lc.m[1][0] * lx + lc.m[1][1] * ly + lc.m[1][2] * lz) >> 12);
++	vec.vz = (int)((lc.m[2][0] * lx + lc.m[2][1] * ly + lc.m[2][2] * lz) >> 12);
++#else
+ 	// lcir is limited to short vector values so we do this instead
+ 	vec.vx = FIXED(lc.m[0][0] * local.vx + lc.m[0][1] * local.vy + lc.m[0][2] * local.vz);
+ 	vec.vy = FIXED(lc.m[1][0] * local.vx + lc.m[1][1] * local.vy + lc.m[1][2] * local.vz);
+ 	vec.vz = FIXED(lc.m[2][0] * local.vx + lc.m[2][1] * local.vy + lc.m[2][2] * local.vz);
++#endif
+ #endif
+ 	gte_SetTransVector(&vec);
+ 
+@@ -77,10 +85,18 @@ int Apply_InvCameraMatrixAndSetMatrix(VECTOR_NOPAD* pos, MATRIX2* mtx)
+ 	MATRIX& lc = inv_camera_matrix;
+ 	//gte_ReadColorMatrix(&lc);	// in general this is a inv_camera_matrix
+ 
++#ifdef __PROSPERO__
++	// full 32-bit difference: the 16-bit SVECTOR above wraps beyond +-32768 units (16 cells)
++	long long lx = (long long)pos->vx - vfc.vx, ly = (long long)pos->vy - vfc.vy, lz = (long long)pos->vz - vfc.vz;
++	vec.vx = (int)((lc.m[0][0] * lx + lc.m[0][1] * ly + lc.m[0][2] * lz) >> 12);
++	vec.vy = (int)((lc.m[1][0] * lx + lc.m[1][1] * ly + lc.m[1][2] * lz) >> 12);
++	vec.vz = (int)((lc.m[2][0] * lx + lc.m[2][1] * ly + lc.m[2][2] * lz) >> 12);
++#else
+ 	// lcir is limited to short vector values so we do this instead
+ 	vec.vx = FIXED(lc.m[0][0] * local.vx + lc.m[0][1] * local.vy + lc.m[0][2] * local.vz);
+ 	vec.vy = FIXED(lc.m[1][0] * local.vx + lc.m[1][1] * local.vy + lc.m[1][2] * local.vz);
+ 	vec.vz = FIXED(lc.m[2][0] * local.vx + lc.m[2][1] * local.vy + lc.m[2][2] * local.vz);
++#endif
+ #endif
+ 
+ 	gte_SetRotMatrix(mtx);
+@@ -115,6 +131,28 @@ int FrustrumCheck16(PACKED_CELL_OBJECT* pcop, int bounding_sphere)
+ 	return -1;
+ }
+ 
++#ifdef __PROSPERO__
++extern MATRIX frustrum_matrix;
++
++// 32-bit version of FrustrumCheck16: the packed position only has 16 bits (absolute, wrapping), so the true
++// position is rebuilt from the cell origin, which makes the test valid beyond 16 cells from the camera.
++int FrustrumCheck16Near(PACKED_CELL_OBJECT* pcop, int bounding_sphere, const XZPAIR* near)
++{
++	long long dx = (long long)near->x + (short)(pcop->pos.vx - near->x) - camera_position.vx;
++	long long dz = (long long)near->z + (short)(pcop->pos.vz - near->z) - camera_position.vz;
++	long long ang = FRUSTUM_THRESHOLD - bounding_sphere;
++
++	for (int i = 0; i < 3; i++)
++	{
++		long long d = (frustrum_matrix.m[i][0] * dx + frustrum_matrix.m[i][2] * dz) >> 12;
++		if (d < ang)
++			return -1;
++	}
++
++	return 0;
++}
++#endif
++
+ // [D] [T]
+ int FrustrumCheck(VECTOR* pos, int bounding_sphere)
+ {
+diff --git a/src_rebuild/Game/ASM/rndrasm.h b/src_rebuild/Game/ASM/rndrasm.h
+index 4b35845..57b55b4 100644
+--- a/src_rebuild/Game/ASM/rndrasm.h
++++ b/src_rebuild/Game/ASM/rndrasm.h
+@@ -9,6 +9,9 @@ extern int Apply_InvCameraMatrixSetTrans(VECTOR_NOPAD* pos);
+ extern int Apply_InvCameraMatrixAndSetMatrix(VECTOR_NOPAD* pos, MATRIX2* mtx);
+ 
+ extern int FrustrumCheck16(PACKED_CELL_OBJECT* pcop, int bounding_sphere); // 0x0001BD30
++#ifdef __PROSPERO__
++extern int FrustrumCheck16Near(PACKED_CELL_OBJECT* pcop, int bounding_sphere, const XZPAIR* near);
++#endif
+ 
+ extern int FrustrumCheck(VECTOR* pos, int bounding_sphere); // 0x0001BDEC
+ 
+diff --git a/src_rebuild/Game/C/cars.c b/src_rebuild/Game/C/cars.c
+index 8a9a9fd..243fe6f 100644
+--- a/src_rebuild/Game/C/cars.c
++++ b/src_rebuild/Game/C/cars.c
+@@ -887,6 +887,20 @@ void plotNewCarModel(CAR_MODEL* car, int palette)
+ 	if (car == NULL)
+ 		return;
+ 
++#ifdef __PROSPERO__
++	// the whole car casts a shadow, also the faces that are culled from the camera
++	for (int k = 0; k < car->numGT3; k++)
++	{
++		const u_int idx = car->pGT3[k].vindices;
++		PGXP_ShadowCasterTri(car->vlist + (idx & 0xff), car->vlist + (idx >> 8 & 0xff), car->vlist + (idx >> 16 & 0xff));
++	}
++	for (int k = 0; k < car->numFT3; k++)
++	{
++		const u_int idx = car->pFT3[k].vindices;
++		PGXP_ShadowCasterTri(car->vlist + (idx & 0xff), car->vlist + (idx >> 8 & 0xff), car->vlist + (idx >> 16 & 0xff));
++	}
++#endif
++
+ 	if (gTimeOfDay > -1)
+ 	{
+ 		if (gTimeOfDay < TIME_NIGHT)
+diff --git a/src_rebuild/Game/C/cell.c b/src_rebuild/Game/C/cell.c
+index 3a7aff1..8ba0f9a 100644
+--- a/src_rebuild/Game/C/cell.c
++++ b/src_rebuild/Game/C/cell.c
+@@ -3,9 +3,17 @@
+ #include "system.h"
+ #include "map.h"
+ #include "spool.h"
++#include <stdlib.h>
++#include <string.h>
+ 
+ int cell_object_index = 0;
+-CELL_OBJECT cell_object_buffer[1024];
++#ifdef __PROSPERO__
++// one slot per unpacked object of a frame: 1024 was overrun by the far-region map (stale/duplicated buildings)
++#define CELL_OBJECT_BUFFER_SIZE 4096
++#else
++#define CELL_OBJECT_BUFFER_SIZE 1024
++#endif
++CELL_OBJECT cell_object_buffer[CELL_OBJECT_BUFFER_SIZE];
+ 
+ u_char cell_object_computed_values[2048];
+ 
+@@ -17,6 +25,352 @@ void ClearCopUsage(void)
+ 	ClearMem((char *)cell_object_computed_values, sizeof_cell_object_computed_values);
+ }
+ 
++
++#ifdef __PROSPERO__
++// ---------------------------------------------------------------------------------------------
++// Far-region cache (PS5): the original keeps only a 2x2 "barrel" of 32x32-cell regions in memory,
++// so geometry vanishes at region borders. The whole level spool data is resident in RAM on PC
++// (g_CurrentLevelSpoolData), so extra regions around the player are copied in from it and used
++// for drawing only. Gameplay (collision, roads, AI) keeps using the barrel.
++// ---------------------------------------------------------------------------------------------
++extern char* g_CurrentLevelSpoolData;
++
++#define FAR_MAX_SLOTS 24
++struct FarSlot
++{
++	int region;
++	int objBase;			// index the region's object list was authored for (straddlers + class base)
++	int objCount;
++	CELL_DATA* cells;
++	PACKED_CELL_OBJECT* objs;
++	u_short ptrs[1024];
++	unsigned lastUse;
++};
++
++static FarSlot g_far[FAR_MAX_SLOTS];
++static int g_farSlots = 0;
++static int g_farCellBytes = 0, g_farObjBytes = 0;
++static int g_farArea = -2;
++static unsigned g_farFrame = 0;
++int gFarRegionRadius = 1;		// ini: [game] farRegions (0 = off)
++static PACKED_CELL_OBJECT g_farDummy;
++
++void FarRegions_Reset(void)
++{
++	for (int i = 0; i < FAR_MAX_SLOTS; i++)
++	{
++		free(g_far[i].cells);
++		free(g_far[i].objs);
++		memset(&g_far[i], 0, sizeof(FarSlot));
++		g_far[i].region = -1;
++	}
++	g_farSlots = 0;
++	g_farArea = -2;
++}
++
++static int FarRegionClass(int region)
++{
++	int rx = region % regions_across, rz = region / regions_across;
++	return (rx & 1) + (rz & 1) * 2;
++}
++
++static int BarrelHasRegion(int region)
++{
++	int slot = FarRegionClass(region);
++	return loading_region[slot] == -1 && RoadMapRegions[slot] == region;
++}
++
++int RegionInBarrel(int cellx, int cellz)
++{
++	return BarrelHasRegion(cellx / MAP_REGION_SIZE + (cellz / MAP_REGION_SIZE) * regions_across);
++}
++
++static FarSlot* FarFind(int region)
++{
++	for (int i = 0; i < g_farSlots; i++)
++		if (g_far[i].region == region)
++			return &g_far[i];
++	return NULL;
++}
++
++static int FarAreaOk(Spool* sp)
++{
++	// Only regions that belong entirely to the loaded area: border regions (super_region 255) hold objects of two
++	// areas, and the models of the other one are not in memory (the game only draws them after switching area),
++	// so drawing them from afar shows garbage.
++	return LoadedArea >= 0 && sp->super_region == LoadedArea;
++}
++
++static void FarInitSlots(void)
++{
++	if (g_farSlots)
++		return;
++
++	int n = gFarRegionRadius * 2 + 1;
++	n = n * n;
++	g_farSlots = n > FAR_MAX_SLOTS ? FAR_MAX_SLOTS : n;
++
++	// size of the biggest region in the level
++	g_farCellBytes = 0;
++	g_farObjBytes = 0;
++	for (int r = 0; r < num_regions; r++)
++	{
++		if (spoolinfo_offsets[r] == 0xffff)
++			continue;
++		Spool* sp = (Spool*)(RegionSpoolInfo + spoolinfo_offsets[r]);
++		if (sp->cell_data_size[0] * 2048 > g_farCellBytes) g_farCellBytes = sp->cell_data_size[0] * 2048;
++		if (sp->cell_data_size[2] * 2048 > g_farObjBytes) g_farObjBytes = sp->cell_data_size[2] * 2048;
++	}
++
++	for (int i = 0; i < g_farSlots; i++)
++	{
++		g_far[i].region = -1;
++		g_far[i].cells = (CELL_DATA*)calloc(1, g_farCellBytes + 64);
++		g_far[i].objs = (PACKED_CELL_OBJECT*)calloc(1, g_farObjBytes + 64);
++	}
++
++	g_farDummy.value = 0xffff;
++	g_farDummy.pos.vy = 1;
++	PsyX_Log("far: %d slots, %d KB cells + %d KB objects each\n", g_farSlots, g_farCellBytes / 1024, g_farObjBytes / 1024);
++}
++
++static int FarLoad(FarSlot* fs, int region)
++{
++	Spool* sp = (Spool*)(RegionSpoolInfo + spoolinfo_offsets[region]);
++	const char* src = g_CurrentLevelSpoolData + sp->offset * 2048;
++
++	// layout as written by LoadRegionData: packed cell pointers, cells, cell objects (then road map)
++	const u_char* packed = (const u_char*)src;
++	src += sp->cell_data_size[1] * 2048;
++	memcpy(fs->cells, src, sp->cell_data_size[0] * 2048);
++	src += sp->cell_data_size[0] * 2048;
++	memcpy(fs->objs, src, sp->cell_data_size[2] * 2048);
++
++	// unpack the 32x32 cell pointers; values are relative to the region's own cell block
++	int packtype = *(const int*)(packed + 4);
++	const u_short* in = (const u_short*)(packed + 8);
++
++	if (packtype == 0)
++	{
++		for (int i = 0; i < 1024; i++)
++			fs->ptrs[i] = 0xffff;
++	}
++	else if (packtype == 1)
++	{
++		for (int i = 0; i < 1024; i++)
++			fs->ptrs[i] = *in++;
++	}
++	else if (packtype == 2)
++	{
++		u_int bitpos = 0x8000;
++		u_int pcode = *in++;
++		for (int i = 0; i < 1024; i++)
++		{
++			fs->ptrs[i] = (pcode & bitpos) ? *in++ : 0xffff;
++			bitpos >>= 1;
++			if (bitpos == 0)
++			{
++				bitpos = 0x8000;
++				pcode = *in++;
++			}
++		}
++	}
++	else
++		return 0;
++
++	fs->objBase = num_straddlers + cell_objects_add[FarRegionClass(region)];
++	fs->objCount = sp->cell_data_size[2] * 2048 / sizeof(PACKED_CELL_OBJECT);
++	fs->region = region;
++	return 1;
++}
++
++void FarRegions_Update(int cellx, int cellz)
++{
++	if (gFarRegionRadius <= 0 || regions_across <= 0 || g_CurrentLevelSpoolData == NULL || LoadingArea || LoadedArea < 0)
++		return;
++
++	FarInitSlots();
++
++	// models/textures are per area: drop everything when the area changes
++	if (g_farArea != LoadedArea)
++	{
++		for (int i = 0; i < g_farSlots; i++)
++			g_far[i].region = -1;
++		g_farArea = LoadedArea;
++	}
++
++	g_farFrame++;
++
++	int rx = cellx / MAP_REGION_SIZE, rz = cellz / MAP_REGION_SIZE;
++	int regions_down_n = cells_down / MAP_REGION_SIZE;
++	int loadsLeft = 2;
++
++	for (int dz = -gFarRegionRadius; dz <= gFarRegionRadius; dz++)
++	{
++		for (int dx = -gFarRegionRadius; dx <= gFarRegionRadius; dx++)
++		{
++			int nx = rx + dx, nz = rz + dz;
++			if (nx < 0 || nz < 0 || nx >= regions_across || nz >= regions_down_n)
++				continue;
++
++			int region = nx + nz * regions_across;
++			if (BarrelHasRegion(region))
++				continue;
++
++			FarSlot* fs = FarFind(region);
++			if (fs)
++			{
++				fs->lastUse = g_farFrame;
++				continue;
++			}
++
++			if (loadsLeft <= 0 || spoolinfo_offsets[region] == 0xffff)
++				continue;
++
++			Spool* sp = (Spool*)(RegionSpoolInfo + spoolinfo_offsets[region]);
++			{
++				// debug: log each region's area data once
++				static int logged[1024];
++				if (region < 1024 && !logged[region])
++				{
++					logged[region] = 1;
++					PsyX_Log("far: region %d (%d,%d) super_region=%d nconn=%d conn=[%d,%d] LoadedArea=%d -> %s\n", region, region % regions_across, region / regions_across,
++						sp->super_region, sp->num_connected_areas, sp->connected_areas[0] & 0x3f, sp->connected_areas[1] & 0x3f, LoadedArea, FarAreaOk(sp) ? "load" : "skip");
++				}
++			}
++			if (!FarAreaOk(sp))
++				continue;
++
++			// free slot, else the least recently used one that is not in the wanted window
++			FarSlot* victim = NULL;
++			for (int i = 0; i < g_farSlots; i++)
++			{
++				if (g_far[i].region == -1) { victim = &g_far[i]; break; }
++				if (g_far[i].lastUse != g_farFrame && (!victim || g_far[i].lastUse < victim->lastUse))
++					victim = &g_far[i];
++			}
++			if (!victim)
++				continue;
++
++			victim->region = -1;
++			if (FarLoad(victim, region))
++			{
++				victim->lastUse = g_farFrame;
++				loadsLeft--;
++			}
++		}
++	}
++}
++
++static PACKED_CELL_OBJECT* FarObj(FarSlot* fs, int num)
++{
++	if (num < num_straddlers)
++		return &cell_objects[num];
++
++	int idx = num - fs->objBase;
++	if (idx < 0 || idx >= fs->objCount)
++		return &g_farDummy;
++
++	return &fs->objs[idx];
++}
++
++static PACKED_CELL_OBJECT* FarGetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR* pci, int use_computed, int level)
++{
++	FarSlot* fs = FarFind(cellx / MAP_REGION_SIZE + (cellz / MAP_REGION_SIZE) * regions_across);
++	if (!fs)
++		return NULL;
++
++	u_short ptr = fs->ptrs[(cellz % MAP_REGION_SIZE) * MAP_REGION_SIZE + (cellx % MAP_REGION_SIZE)];
++	if (ptr == 0xffff)
++		return NULL;
++
++	CELL_DATA* cell = &fs->cells[ptr];
++
++	if (level == -1)
++	{
++		if (cell->num & 0x4000)
++			return NULL;
++	}
++	else
++	{
++		level |= 0x4000;
++		while (cell->num != level)
++		{
++			cell++;
++			if (cell->num & 0x8000)
++				return NULL;
++		}
++		cell++;
++	}
++
++	pci->nearCell.x = (cellx - (cells_across / 2)) * MAP_CELL_SIZE;
++	pci->nearCell.z = (cellz - (cells_down / 2)) * MAP_CELL_SIZE;
++	pci->use_computed = use_computed;
++	pci->pcd = cell;
++	pci->farCtx = fs;
++
++	int num = cell->num & 16383;
++	PACKED_CELL_OBJECT* ppco = FarObj(fs, num);
++
++	if (ppco->value == 0xffff && (ppco->pos.vy & 1))
++	{
++		ppco = GetNextPackedCop(pci);
++	}
++	else if (use_computed && num < num_straddlers)
++	{
++		u_int value = 1 << (num & 7);
++		if (cell_object_computed_values[num / 8] & value)
++		{
++			ppco = GetNextPackedCop(pci);
++			pci->ppco = ppco;
++			return ppco;
++		}
++		cell_object_computed_values[num / 8] |= value;
++	}
++
++	pci->ppco = ppco;
++	return ppco;
++}
++
++static PACKED_CELL_OBJECT* FarGetNextPackedCop(CELL_ITERATOR* pci)
++{
++	FarSlot* fs = (FarSlot*)pci->farCtx;
++	CELL_DATA* celld = pci->pcd;
++	PACKED_CELL_OBJECT* ppco;
++	int num;
++
++	do {
++		do {
++			if (celld->num & 0x8000)
++				return NULL;
++
++			celld++;
++			num = celld->num;
++
++			if (num & 0x4000)
++				return NULL;
++
++			num &= 16383;
++			ppco = FarObj(fs, num);
++		} while (ppco->value == 0xffff && (ppco->pos.vy & 1));
++
++		if (!pci->use_computed || num >= num_straddlers)
++			break;
++
++		u_int value = 1 << (num & 7);
++		if ((cell_object_computed_values[num / 8] & value) == 0)
++		{
++			cell_object_computed_values[num / 8] |= value;
++			break;
++		}
++	} while (true);
++
++	pci->pcd = celld;
++	pci->ppco = ppco;
++	return ppco;
++}
++#endif // __PROSPERO__
++
+ // [D] [T]
+ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci, int use_computed, int level)
+ {
+@@ -35,12 +389,20 @@ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci,
+ 	if (NumPlayers == 2)
+ #endif // else do this check always
+ 	{
++#ifdef __PROSPERO__
++		pci->farCtx = NULL;
++
++		if (loading_region[index] != -1 ||
++			RoadMapRegions[index] != (cellx / MAP_REGION_SIZE) + (cellz / MAP_REGION_SIZE) * (cells_across / MAP_REGION_SIZE))
++			return FarGetFirstPackedCop(cellx, cellz, pci, use_computed, level);
++#else
+ 		// [A] don't draw loading region
+ 		if (loading_region[index] != -1)
+ 			return NULL;
+ 		
+ 		if (RoadMapRegions[index] != (cellx / MAP_REGION_SIZE) + (cellz / MAP_REGION_SIZE) * (cells_across / MAP_REGION_SIZE))
+ 			return NULL;
++#endif
+ 	}
+ 
+ 	cbr = (cellz % MAP_REGION_SIZE) * MAP_REGION_SIZE + index * (MAP_REGION_SIZE*MAP_REGION_SIZE) + (cellx % MAP_REGION_SIZE);
+@@ -117,6 +479,10 @@ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci,
+ // [D] [T]
+ PACKED_CELL_OBJECT* GetNextPackedCop(CELL_ITERATOR* pci)
+ {
++#ifdef __PROSPERO__
++	if (pci->farCtx)
++		return FarGetNextPackedCop(pci);
++#endif
+ 	ushort num;
+ 	u_int value;
+ 	PACKED_CELL_OBJECT* ppco;
+@@ -167,7 +533,7 @@ CELL_OBJECT* UnpackCellObject(PACKED_CELL_OBJECT* ppco, XZPAIR* near)
+ 		return NULL;
+ 
+ 	pco = &cell_object_buffer[newIndex = cell_object_index];
+-	cell_object_index = newIndex + 1 & 1023;
++	cell_object_index = newIndex + 1 & (CELL_OBJECT_BUFFER_SIZE - 1);
+ 
+ 	QuickUnpackCellObject(ppco, near, pco);
+ 
+diff --git a/src_rebuild/Game/C/cell.h b/src_rebuild/Game/C/cell.h
+index 15767f6..58697d2 100644
+--- a/src_rebuild/Game/C/cell.h
++++ b/src_rebuild/Game/C/cell.h
+@@ -4,6 +4,12 @@
+ extern unsigned char cell_object_computed_values[2048];
+ 
+ extern void ClearCopUsage(); // 0x00023DC0
++#ifdef __PROSPERO__
++extern void FarRegions_Reset(void);
++extern void FarRegions_Update(int cellx, int cellz);
++extern int RegionInBarrel(int cellx, int cellz);
++extern int gFarRegionRadius;
++#endif
+ 
+ extern PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci, int use_computed, int level = -1); // 0x00023BAC
+ extern PACKED_CELL_OBJECT* GetNextPackedCop(CELL_ITERATOR* pci); // 0x0003F5F0
+diff --git a/src_rebuild/Game/C/civ_ai.c b/src_rebuild/Game/C/civ_ai.c
+index e2a0da0..7f95456 100644
+--- a/src_rebuild/Game/C/civ_ai.c
++++ b/src_rebuild/Game/C/civ_ai.c
+@@ -1079,7 +1079,7 @@ int CheckChangeLanes(DRIVER2_STRAIGHT* straight, DRIVER2_CURVE* curve, int distA
+ 			segLen = straight->length;
+ 		}
+ 
+-		newLane = currentLane + (Random2((int)straight) >> 7 & 2U) + 0xff & 0xff;
++		newLane = currentLane + (Random2((int)(intptr_t)straight) >> 7 & 2U) + 0xff & 0xff;
+ 		
+ 		if (tryToPark)
+ 		{
+diff --git a/src_rebuild/Game/C/debris.c b/src_rebuild/Game/C/debris.c
+index d940cfd..cb63782 100644
+--- a/src_rebuild/Game/C/debris.c
++++ b/src_rebuild/Game/C/debris.c
+@@ -2421,6 +2421,12 @@ void ShowGroundLight(VECTOR *v1, CVECTOR *col, short size)
+ // [D] [T]
+ void RoundShadow(VECTOR *v1, CVECTOR *col, short size)
+ {
++#ifdef __PROSPERO__
++	extern int gShadows2D;
++	if (!gShadows2D)
++		return;
++#endif
++
+ 	POLY_FT4* poly;
+ 	SVECTOR vert[4];
+ 	int z;
+diff --git a/src_rebuild/Game/C/dr2roads.c b/src_rebuild/Game/C/dr2roads.c
+index 0a32a04..16cf033 100644
+--- a/src_rebuild/Game/C/dr2roads.c
++++ b/src_rebuild/Game/C/dr2roads.c
+@@ -404,7 +404,7 @@ sdPlane* sdGetCell(VECTOR *pos)
+ 
+ 	plane = &planeData[*surface];
+ 
+-	if (((int)plane & 3) == 0 && *(int *)plane != -1) 
++	if (((int)(intptr_t)plane & 3) == 0 && *(int *)plane != -1) 
+ 	{
+ 		if (plane->surface - 16U < 16)
+ 			plane = EventSurface(pos, plane);
+diff --git a/src_rebuild/Game/C/draw.c b/src_rebuild/Game/C/draw.c
+index c9497d8..9609bce 100644
+--- a/src_rebuild/Game/C/draw.c
++++ b/src_rebuild/Game/C/draw.c
+@@ -1,4 +1,5 @@
+ #include "driver2.h"
++#include <time.h>
+ 
+ #include "draw.h"
+ #include "main.h"
+@@ -87,6 +88,10 @@ SVECTOR night_colours[4] =
+ 
+ void* model_object_ptrs[MAX_DRAWN_BUILDINGS];
+ void* model_tile_ptrs[MAX_DRAWN_TILES];
++#ifdef __PROSPERO__
++XZPAIR model_tile_near[MAX_DRAWN_TILES];	// cell origin of each packed tile/sprite (positions are only 16-bit)
++XZPAIR sprite_near[MAX_DRAWN_SPRITES];
++#endif
+ void* anim_obj_buffer[MAX_DRAWN_ANIMATING];
+ void* spriteList[MAX_DRAWN_SPRITES];
+ 
+@@ -111,6 +116,9 @@ int setupYet = 0;
+ 
+ int gDrawDistance = PVS_CELL_COUNT * PVS_CELL_COUNT;
+ 
++// [PS5] radius in cells of the walked area; 0 = original (PVS_CELL_COUNT). Cells outside the PVS window count as visible.
++int gExtendedView = 0;
++
+ #ifndef PSX
+ _pct& plotContext = *(_pct*)((u_char*)getScratchAddr(0) + 1024 - sizeof(_pct));	// orig offset: 0x1f800020
+ #endif
+@@ -123,6 +131,12 @@ struct MVERTEX5x5
+ // [D] [T] [A]
+ void addSubdivSpriteShadow(POLYFT4* src, SVECTOR* verts, int z)
+ {
++#ifdef __PROSPERO__
++	extern int gShadows2D;
++	if (!gShadows2D)
++		return;
++#endif
++
+ 	int m;
+ 
+ 	m = 4;
+@@ -221,6 +235,9 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
+ 
+ 	list = sprites;
+ 	numShadows = 0;
++#ifdef __PROSPERO__
++	int spriteIdx = 0;
++#endif
+ 
+ 	while (numFound--)
+ 	{
+@@ -240,12 +257,39 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
+ 			plotContext.colour = spriteColour;
+ 		}
+ 
++#ifdef __PROSPERO__
++		{
++			const XZPAIR& sn = sprite_near[spriteIdx++];
++			plotContext.scribble[0] = sn.x + (short)(pco->pos.vx - sn.x);
++			plotContext.scribble[2] = sn.z + (short)(pco->pos.vz - sn.z);
++			plotContext.scribble[1] = (pco->pos.vy << 0x10) >> 0x11;
++		}
++#else
+ 		plotContext.scribble[0] = pco->pos.vx;
+ 		plotContext.scribble[1] = (pco->pos.vy << 0x10) >> 0x11;
+ 		plotContext.scribble[2] = pco->pos.vz;
++#endif
+ 
+ 		z = Apply_InvCameraMatrixAndSetMatrix((VECTOR_NOPAD*)plotContext.scribble, (MATRIX2*)&face_camera);
+ 
++#ifdef __PROSPERO__
++		if (z < 14000)
++		{
++			extern SVECTOR sun_position[4], moon_position[4];
++			const SVECTOR* sunv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
++			POLYFT4* sp = GET_MODEL_DATA(POLYFT4, model, poly_block);
++			SVECTOR* sv = GET_MODEL_DATA(SVECTOR, model, vertices);
++			int np = (u_int)model->num_polys;
++			while (np-- > 0)
++			{
++				const void* vv[4] = { &sv[sp->v0], &sv[sp->v1], &sv[sp->v3], &sv[sp->v2] };
++				const unsigned char* uu[4] = { (const unsigned char*)&sp->uv0, (const unsigned char*)&sp->uv1, (const unsigned char*)&sp->uv3, (const unsigned char*)&sp->uv2 };
++				PGXP_ShadowCasterSprite(vv, uu, texture_pages[sp->texture_set], texture_cluts[sp->texture_set][sp->texture_id], &inv_camera_matrix.m[0][0], sunv->vx, sunv->vy, sunv->vz);
++				sp++;
++			}
++		}
++#endif
++
+ 		if (z < 1000)
+ 		{
+ 			POLYFT4* src;
+@@ -554,11 +598,11 @@ void DrawAllTheCars(int view)
+ 		for (i = 0; i < num_cars_to_draw; i++)
+ 		{
+ 			// Don't exceed draw buffers
+-			if ((int)(current->primtab + (-3000 - (int)(current->primptr - PRIMTAB_SIZE))) < 5800)
++			if ((int)(intptr_t)(current->primtab + (-3000 - (int)(intptr_t)(current->primptr - PRIMTAB_SIZE))) < 5800)
+ 				return;
+ 
+ 			// make cars look uglier
+-			if ((int)(current->primtab + (-3000 - (int)(current->primptr - PRIMTAB_SIZE)) - spacefree) < 5800)
++			if ((int)(intptr_t)(current->primtab + (-3000 - (int)(intptr_t)(current->primptr - PRIMTAB_SIZE)) - spacefree) < 5800)
+ 				gForceLowDetailCars = 1;
+ 
+ 			if (cars_to_draw[i]->controlType == CONTROL_TYPE_PLAYER)
+@@ -714,6 +758,14 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
+ 	{
+ 		ptype = polys->id & 31;
+ 
++#ifdef __PROSPERO__
++		if (ptype == 11 || ptype == 21 || ptype == 23)
++		{
++			PGXP_ShadowCasterTri(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
++			PGXP_ShadowCasterTri(&srcVerts[polys->v1], &srcVerts[polys->v2], &srcVerts[polys->v3]);
++		}
++#endif
++
+ 		// skip certain polygons
+ 		if (ptype != 11 && ptype != 21 && ptype != 23)
+ 		{
+@@ -992,10 +1044,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
+ 
+ 		plotContext.ot = ot + zbias * 4;
+ 
++#ifdef __PROSPERO__
++		PlotBuildingModel(model, cop->yang, &plotContext);
++#else
+ 		if(Z <= DRAW_LOD_DIST_HIGH)
+ 			PlotBuildingModelSubdivNxN(model, cop->yang, &plotContext, 1);
+ 		else
+ 			PlotBuildingModel(model, cop->yang, &plotContext);
++#endif
+ 
+ 		drawlimit = (int)(current->primptr - current->primtab);
+ 
+@@ -1057,6 +1113,11 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
+ 			continue;
+ 		}
+ 
++#ifdef __PROSPERO__
++		PGXP_ShadowCasterTri(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
++		PGXP_ShadowCasterTri(&srcVerts[polys->v1], &srcVerts[polys->v2], &srcVerts[polys->v3]);
++#endif
++
+ 		// perform transform
+ 		gte_ldv3(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
+ 		gte_rtpt();
+@@ -1302,6 +1363,17 @@ void DrawMapPSX(int* comp_val)
+ 
+ 	SetupDrawMapPSX();
+ 
++#ifdef __PROSPERO__
++	FarRegions_Update(current_cell_x, current_cell_z);
++	{
++		extern SVECTOR sun_position[4], moon_position[4];
++		extern void GR_PS5_SetShadowParams(int sx, int sy, int sz, const short* m, int cx, int cy, int cz);
++		const SVECTOR* sunv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
++		PGXP_ShadowCasterReset();
++		GR_PS5_SetShadowParams(sunv->vx, sunv->vy, sunv->vz, &inv_camera_matrix.m[0][0], camera_position.vx, camera_position.vy, camera_position.vz);
++	}
++#endif
++
+ 	// clean cell cache
+ 	ClearCopUsage();
+ 
+@@ -1330,8 +1402,12 @@ void DrawMapPSX(int* comp_val)
+ 		drawData.farClipLimit = farClip2Player;
+ 	else
+ 		drawData.farClipLimit = 60000;
++#else
++#ifdef __PROSPERO__
++	drawData.farClipLimit = 600000;
+ #else
+ 	drawData.farClipLimit = 125000;
++#endif
+ #endif
+ 
+ 	drawData.tiles_found = 0;
+@@ -1356,12 +1432,25 @@ void DrawMapPSX(int* comp_val)
+ 	else
+ 		distScale = goFaster & 31;
+ 
+-	i = (gDrawDistance >> distScale);		// [A]
++	int maxCells = PVS_CELL_COUNT;
++	int walkSteps = gDrawDistance;
++
++	if (gExtendedView > PVS_CELL_COUNT)
++	{
++		maxCells = gExtendedView;
++		if (walkSteps < (2 * maxCells + 1) * (2 * maxCells + 1))
++			walkSteps = (2 * maxCells + 1) * (2 * maxCells + 1);
++	}
++
++	i = (walkSteps >> distScale);		// [A]
++#ifdef __PROSPERO__
++	int ringCells[6] = {0}, ringPass[6] = {0}, ringObjs[6] = {0}, ringFrust[6] = {0}; int stepsDone = 0;
++#endif
+ 
+ 	// walk through all cells
+ 	do
+ 	{
+-		if (ABS(hloop) + ABS(vloop) < PVS_CELL_COUNT)
++		if (ABS(hloop) + ABS(vloop) < maxCells)
+ 		{
+ 			// clamped vis values
+ 			int vis_h = MIN(MAX(hloop, -9), PVS_CELL_COUNT / 2);
+@@ -1369,26 +1458,51 @@ void DrawMapPSX(int* comp_val)
+ 
+ 			cellx = drawData.cellxpos + hloop;
+ 			cellz = drawData.cellzpos + vloop;
++#ifdef __PROSPERO__
++			int ringIdx = MAX(ABS(hloop), ABS(vloop)) / 8; if (ringIdx > 5) ringIdx = 5;
++			ringCells[ringIdx]++; stepsDone++;
++#endif
+ 
+ 			if (drawData.rightPlane < 0 &&
+ 				drawData.leftPlane > 0 &&
+ 				drawData.backPlane < drawData.farClipLimit &&  // check planes
+ 				cellx > -1 && cellx < cells_across &&							// check cell ranges
+ 				cellz > -1 && cellz < cells_down &&
+-				PVS_ptr[vis_v * pvs_square + vis_h]) // check PVS table
++				(PVS_ptr[vis_v * pvs_square + vis_h] ||
++					(gExtendedView > PVS_CELL_COUNT && (hloop < -9 || hloop > 10 || vloop < -9 || vloop > 10 || !RegionInBarrel(cellx, cellz))))) // check PVS table (outside its window: visible when extended)
+ 			{
+ 				// walk each cell object in cell
++#ifdef __PROSPERO__
++				ringPass[ringIdx]++;
++#endif
+ 				for (ppco = GetFirstPackedCop(cellx, cellz, &ci, 1, drawData.cellLevel); ppco; ppco = GetNextPackedCop(&ci))
+ 				{
+ 					model = modelpointers[(ppco->value >> 6) | ((ppco->pos).vy & 1) << 10];
++#ifdef __PROSPERO__
++					ringObjs[ringIdx]++;
++					if (!model)
++						continue;	// far region object whose model is not in the loaded area
++#endif
+ 
++#ifdef __PROSPERO__
++					if (FrustrumCheck16Near(ppco, model->bounding_sphere, &ci.nearCell) != -1)
++#else
+ 					if (FrustrumCheck16(ppco, model->bounding_sphere) != -1)
++#endif
+ 					{
++#ifdef __PROSPERO__
++						ringFrust[ringIdx]++;
++#endif
+ 						// sprity type
+ 						if (model->shape_flags & SHAPE_FLAG_SPRITE)
+ 						{
+ 							if (drawData.sprites_found < MAX_DRAWN_SPRITES)
++							{
++#ifdef __PROSPERO__
++								sprite_near[drawData.sprites_found] = ci.nearCell;
++#endif
+ 								spriteList[drawData.sprites_found++] = ppco;
++							}
+ 
+ 							if ((model->flags2 & MODEL_FLAG_ANIMOBJ) && drawData.anim_objs_found < MAX_DRAWN_ANIMATING)
+ 							{
+@@ -1452,7 +1566,12 @@ void DrawMapPSX(int* comp_val)
+ 								}
+ 
+ 								if (drawData.tiles_found < MAX_DRAWN_TILES)
++								{
++#ifdef __PROSPERO__
++									model_tile_near[drawData.tiles_found] = ci.nearCell;
++#endif
+ 									model_tile_ptrs[drawData.tiles_found++] = ppco;
++								}
+ 							}
+ 							else
+ 							{
+@@ -1523,6 +1642,25 @@ void DrawMapPSX(int* comp_val)
+ 	PrintString(tempBuf, 10, 120);
+ #endif
+ 
++#ifdef __PROSPERO__
++	{
++		static int logN = 0;
++		static struct timespec lastTs;
++		if (++logN % 90 == 0)
++		{
++			struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
++			double dt = (ts.tv_sec - lastTs.tv_sec) + (ts.tv_nsec - lastTs.tv_nsec) / 1e9;
++			lastTs = ts;
++			PsyX_Log("map: cell=(%d,%d) of %dx%d regions=%d steps=%d rings(8 cells each) [cells/visible/objs/inFrustum]: %d/%d/%d/%d %d/%d/%d/%d %d/%d/%d/%d %d/%d/%d/%d %d/%d/%d/%d %d/%d/%d/%d\n", drawData.cellxpos, drawData.cellzpos, cells_across, cells_down, num_regions, stepsDone,
++				ringCells[0], ringPass[0], ringObjs[0], ringFrust[0], ringCells[1], ringPass[1], ringObjs[1], ringFrust[1], ringCells[2], ringPass[2], ringObjs[2], ringFrust[2],
++				ringCells[3], ringPass[3], ringObjs[3], ringFrust[3], ringCells[4], ringPass[4], ringObjs[4], ringFrust[4], ringCells[5], ringPass[5], ringObjs[5], ringFrust[5]);
++			PsyX_Log("map: view=%d | found buildings=%d tiles=%d sprites=%d anim=%d | primtab used=%dKB | %.1f fps\n", maxCells,
++				drawData.other_models_found, drawData.tiles_found, drawData.sprites_found, drawData.anim_objs_found,
++				(int)(current->primptr - current->primtab) / 1024, 90.0 / dt);
++		}
++	}
++#endif
++
+ 	SetupPlaneColours(combointensity);
+ 
+ 	if (drawData.anim_objs_found)
+diff --git a/src_rebuild/Game/C/draw.h b/src_rebuild/Game/C/draw.h
+index 862974f..ca88f28 100644
+--- a/src_rebuild/Game/C/draw.h
++++ b/src_rebuild/Game/C/draw.h
+@@ -64,10 +64,10 @@ extern MATRIX2 CompoundMatrix[64];
+ 
+ #else
+ 
+-#define MAX_DRAWN_BUILDINGS		384
+-#define MAX_DRAWN_TILES			750
+-#define MAX_DRAWN_ANIMATING		48
+-#define MAX_DRAWN_SPRITES		128
++#define MAX_DRAWN_BUILDINGS		1024
++#define MAX_DRAWN_TILES			2048
++#define MAX_DRAWN_ANIMATING		96
++#define MAX_DRAWN_SPRITES		256
+ 
+ #define DRAW_LOD_DIST_HIGH		7000
+ #define DRAW_LOD_DIST_LOW		10000
+diff --git a/src_rebuild/Game/C/event.c b/src_rebuild/Game/C/event.c
+index e913f47..17122fe 100644
+--- a/src_rebuild/Game/C/event.c
++++ b/src_rebuild/Game/C/event.c
+@@ -2986,7 +2986,7 @@ void DrawEvents(int camera)
+ 
+ 										pos.vx = pos.vx - boatOffset.vx;
+ 										pos.vz = pos.vz - boatOffset.vz;
+-										pos.vy = (pos.vy - boatOffset.vy) + FIXEDH((int)ev->node * RSIN(*ev->data));
++										pos.vy = (pos.vy - boatOffset.vy) + FIXEDH((int)(intptr_t)ev->node * RSIN(*ev->data));
+ 									}
+ 									else if (type == 0x400)
+ 									{
+diff --git a/src_rebuild/Game/C/glaunch.c b/src_rebuild/Game/C/glaunch.c
+index 4aca8ae..2a51463 100644
+--- a/src_rebuild/Game/C/glaunch.c
++++ b/src_rebuild/Game/C/glaunch.c
+@@ -288,14 +288,14 @@ void State_GameStart(void* param)
+ 
+ void State_InitFrontEnd(void* param)
+ {
+-	if ((int)param == 2)
++	if ((int)(intptr_t)param == 2)
+ 	{
+ 		InitFrontend();
+ 		InitFrontendDisplay();
+ 	}
+ 	else
+ 	{
+-		ReInitFrontend((int)param == 0);
++		ReInitFrontend((int)(intptr_t)param == 0);
+ 	}
+ 
+ 	SetState(STATE_FRONTEND);
+@@ -304,7 +304,7 @@ void State_InitFrontEnd(void* param)
+ // [D] [T]
+ void State_FMVPlay(void* param)
+ {
+-	PlayFMV((int)param);
++	PlayFMV((int)(intptr_t)param);
+ 	SetState(STATE_INITFRONTEND, (void*)1);
+ }
+ 
+@@ -376,7 +376,7 @@ void State_MissionLadder(void* param)
+ 	MISSION_STEP* CurrentStep;
+ 	RENDER_ARGS RenderArgs;
+ 
+-	newgame = (int)param;
++	newgame = (int)(intptr_t)param;
+ 	quit = 0;
+ 
+ 	RenderArgs.nRenders = 0;
+diff --git a/src_rebuild/Game/C/loadsave.c b/src_rebuild/Game/C/loadsave.c
+index d62f17e..e60e722 100644
+--- a/src_rebuild/Game/C/loadsave.c
++++ b/src_rebuild/Game/C/loadsave.c
+@@ -86,8 +86,42 @@ void ShowSavingWaitMessage(char *message, int height)
+ }
+ 
+ #ifndef PSX
++#ifdef __PROSPERO__
++#include <sys/stat.h>
++// PS5: no HOME. Use the first writable of these directories (probed once, result is logged).
++static const char* PS5_SaveDir()
++{
++	static const char* chosen = NULL;
++	static const char* const candidates[] = { "/data/redriver2", "/app0/save" };
++	if (chosen)
++		return chosen;
++
++	for (int i = 0; i < 2 && !chosen; i++)
++	{
++		char probe[128];
++		mkdir(candidates[i], 0777);
++		sprintf(probe, "%s/.probe", candidates[i]);
++		FILE* fp = fopen(probe, "wb");
++		PsyX_Log("save: probe %s -> %s\n", candidates[i], fp ? "writable" : "no");
++		if (fp)
++		{
++			fclose(fp);
++			chosen = candidates[i];
++		}
++	}
++
++	if (!chosen)
++		chosen = candidates[1];
++	return chosen;
++}
++#endif
++
+ void GetGameProfilePath(char* str)
+ {
++#ifdef __PROSPERO__
++	strcpy(str, PS5_SaveDir());
++	return;
++#endif
+ 	char* homepath;
+ 
+ 	homepath = getenv(HOME_ENV); // "USERPROFILE"
+diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
+index 91d8bb8..db076db 100644
+--- a/src_rebuild/Game/C/main.c
++++ b/src_rebuild/Game/C/main.c
+@@ -1826,7 +1826,6 @@ int redriver2_main(int argc, char** argv)
+ 	SetVideoMode(video_mode);
+ 
+ 	CdInit();
+-	SsSetSerialVol(0, 0, 0);
+ 
+ 	SpuInit();
+ 	InitGeom();
+@@ -1837,7 +1836,6 @@ int redriver2_main(int argc, char** argv)
+ 	InitControllers();
+ 	Init_FileSystem();
+ 	InitSound();
+-	
+ 	// [A] REDRIVER 2 version auto-detection
+ 	// this is the only difference between the files on CD
+ #ifdef DEMO_VERSION
+@@ -1860,6 +1858,7 @@ int redriver2_main(int argc, char** argv)
+ 	{
+ 		char str[320];
+ 		sprintf(str, "Cannot initialize REDRIVER2\n\nGame files not found by folder '%s'\n", gDataFolder);
++		PsyX_Log("FAIL files: %s\n", str);
+ 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", str, NULL);
+ 		return -1;
+ 	}
+@@ -1867,6 +1866,7 @@ int redriver2_main(int argc, char** argv)
+ 	// init language
+ 	if (!InitStringMng())
+ 	{
++		PsyX_Log("FAIL language files\n");
+ 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", "Unable to load language files!\n\nSee console for details", NULL);
+ 		return -1;
+ 	}
+diff --git a/src_rebuild/Game/C/map.c b/src_rebuild/Game/C/map.c
+index b79a956..799b2f3 100644
+--- a/src_rebuild/Game/C/map.c
++++ b/src_rebuild/Game/C/map.c
+@@ -1,5 +1,6 @@
+ #include "driver2.h"
+ #include "map.h"
++#include "cell.h"
+ #include "system.h"
+ #include "spool.h"
+ #include "convert.h"
+@@ -53,6 +54,10 @@ void InitCellData(void)
+ {
+ 	int loop;
+ 
++#ifdef __PROSPERO__
++	FarRegions_Reset();
++#endif
++
+ 	D_MALLOC_BEGIN();
+ 
+ 	cell_ptrs = (ushort*)D_MALLOC(4096 * sizeof(short));
+diff --git a/src_rebuild/Game/C/mission.c b/src_rebuild/Game/C/mission.c
+index 5b29293..33d5693 100644
+--- a/src_rebuild/Game/C/mission.c
++++ b/src_rebuild/Game/C/mission.c
+@@ -465,7 +465,7 @@ void LoadMission(int missionnum)
+ 	MissionStrings = (char*)(MissionScript + MissionLoadAddress->strings);
+ 	
+ 	if (MissionLoadAddress->route && !NewLevel)
+-		loadsize = (u_int)((char*)MissionStrings + ((char*)MissionLoadAddress->route - (char*)MissionLoadAddress));
++		loadsize = (u_int)(uintptr_t)((char*)MissionStrings + ((char*)MissionLoadAddress->route - (char*)MissionLoadAddress));
+ 	else
+ 		loadsize = length;
+ 
+diff --git a/src_rebuild/Game/C/motion_c.c b/src_rebuild/Game/C/motion_c.c
+index c1842b5..af16312 100644
+--- a/src_rebuild/Game/C/motion_c.c
++++ b/src_rebuild/Game/C/motion_c.c
+@@ -610,7 +610,7 @@ void DrawBodySprite(LPPEDESTRIAN pDrawingPed, int boneId, VERTTYPE v1[2], VERTTY
+ #if USE_PGXP
+ 	if (!bDoingShadow) // [A] Psy-X is currently incorrectly offsets the offscreen PGXP geometry. We don't need it anyway.
+ 	{
+-		ushort pgxpIdx = PGXP_GetIndex(0) - 64;
++		PGXPIndex pgxpIdx = PGXP_GetIndex(0) > 64 ? PGXP_GetIndex(0) - 64 : 0;
+ 		PGXPVData vdata1, vdata2;
+ 		PGXP_GetCacheData(&vdata1, PGXP_LOOKUP_VALUE(v1[0], v1[1]), pgxpIdx);
+ 		PGXP_GetCacheData(&vdata2, PGXP_LOOKUP_VALUE(v2[0], v2[1]), pgxpIdx);
+@@ -1810,6 +1810,12 @@ void InitTannerShadow(void)
+ // [D] [T]
+ void TannerShadow(LPPEDESTRIAN pDrawingPed, VECTOR* pPedPos, SVECTOR* pLightPos, CVECTOR* col, short angle)
+ {
++#ifdef __PROSPERO__
++	extern int gShadows2D;
++	if (!gShadows2D)
++		return;
++#endif
++
+ 	POLY_FT4* curPoly;
+ 	DR_ENV* dr_env;
+ 	SVECTOR vert[4];
+diff --git a/src_rebuild/Game/C/pedest.c b/src_rebuild/Game/C/pedest.c
+index b2cff4c..115a11d 100644
+--- a/src_rebuild/Game/C/pedest.c
++++ b/src_rebuild/Game/C/pedest.c
+@@ -485,6 +485,13 @@ void DrawAllPedestrians(void)
+ 		if (PositionVisible((VECTOR*)&pPed->position) &&
+ 			FrustrumCheck((VECTOR*)&pPed->position, 60) != -1)
+ 		{
++#ifdef __PROSPERO__
++			{
++				// pedestrians cast a simple upright box (y is down)
++				const float c[3] = { (float)(pPed->position.vx - camera_position.vx), (float)(pPed->position.vy - camera_position.vy), (float)(pPed->position.vz - camera_position.vz) };
++				PGXP_ShadowCasterBox(c, 60.0f, -300.0f, 100.0f, &inv_camera_matrix.m[0][0]);
++			}
++#endif
+ 			if (pPed->pedType == TANNER_MODEL)
+ 			{
+ 				if (!bKillTanner)
+diff --git a/src_rebuild/Game/C/shadow.c b/src_rebuild/Game/C/shadow.c
+index 4088abe..1c4653b 100644
+--- a/src_rebuild/Game/C/shadow.c
++++ b/src_rebuild/Game/C/shadow.c
+@@ -27,6 +27,9 @@ struct TYRE_TRACK
+ };
+ 
+ int gShadowTexturePage;
++#ifdef __PROSPERO__
++int gShadows2D = 1;	// ini: [game] shadows2d (the original flat blob shadows)
++#endif
+ int gShadowTextureNum;
+ 
+ UV shadowuv;
+@@ -457,7 +460,13 @@ extern VECTOR dummy;
+ 
+ // [D] [T] [A] better shadow code
+ void PlaceShadowForCar(VECTOR *shadowPoints, int subdiv, int zOfs, int flag)
+-{	
++{
++#ifdef __PROSPERO__
++	extern int gShadows2D;
++	if (!gShadows2D)
++		return;
++#endif
++	
+ 	MVERTEX subdivVerts[5][5];
+ 	SVECTOR points[4];
+ 
+diff --git a/src_rebuild/Game/C/sound.c b/src_rebuild/Game/C/sound.c
+index b295be6..cc4fb73 100644
+--- a/src_rebuild/Game/C/sound.c
++++ b/src_rebuild/Game/C/sound.c
+@@ -133,7 +133,7 @@ void InitSound(void)
+ 		{
+ 			printError("Failed to SpuMalloc! Exiting...\n");
+ #ifndef PSX
+-			exit(-1);
++			PsyX_Log("EXIT sound.c SpuMalloc\n"); exit(-1);
+ #endif
+ 		}
+ 	}
+diff --git a/src_rebuild/Game/C/system.c b/src_rebuild/Game/C/system.c
+index 9bb086e..d8b518b 100644
+--- a/src_rebuild/Game/C/system.c
++++ b/src_rebuild/Game/C/system.c
+@@ -1,4 +1,6 @@
+ #include "driver2.h"
++#include <unistd.h>
++#include <errno.h>
+ 
+ #ifndef PSX
+ #include <stdint.h>
+@@ -953,7 +955,7 @@ void SetCityType(CITYTYPE type)
+ 		char errPrint[512];
+ 		sprintf(errPrint, "SetCityType: failed to open '%s'\n", filename);
+ 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR", errPrint, NULL);
+-		exit(0);
++		PsyX_Log("EXIT system.c SetCityType\n"); exit(0);
+ #endif // !__EMSCRIPTEN__
+ #else
+ 		DoCDRetry();
+diff --git a/src_rebuild/Game/C/system.h b/src_rebuild/Game/C/system.h
+index f265e43..3db1b16 100644
+--- a/src_rebuild/Game/C/system.h
++++ b/src_rebuild/Game/C/system.h
+@@ -136,11 +136,20 @@ extern DRAW_MODE draw_mode_ntsc;
+ #ifdef PSX
+ #define	OTSIZE	0x1080
+ #else
++#ifdef __PROSPERO__
++// Z>>1 indexes the OT and the GTE clamps OTZ to 16 bits: size it for the full range (the original 0x2000 only reached ~16k units, ~8 cells)
++#define	OTSIZE	0x8800
++#else
+ #define	OTSIZE	0x2000
+ #endif
++#endif
+ 
+ #if USE_EXTENDED_PRIM_POINTERS
+-#	define PRIMTAB_SIZE 0x50000
++#	ifdef __PROSPERO__
++#		define PRIMTAB_SIZE 0x2000000	// 32 MB: far-region ground tiles alone need several MB per frame
++#	else
++#		define PRIMTAB_SIZE 0x50000
++#	endif
+ #else
+ #	define PRIMTAB_SIZE 0x1e000
+ #endif
+diff --git a/src_rebuild/Game/C/tile.c b/src_rebuild/Game/C/tile.c
+index 28a6477..041404a 100644
+--- a/src_rebuild/Game/C/tile.c
++++ b/src_rebuild/Game/C/tile.c
+@@ -256,14 +256,36 @@ void DrawTILES(PACKED_CELL_OBJECT** tiles, int tile_amount)
+ 	plotContext.polySizes = PolySizes;
+ 
+ 	tilePointers = (PACKED_CELL_OBJECT **)tiles;
++#ifdef __PROSPERO__
++	int tileIdx = 0;
++#endif
+ 
++#ifdef __PROSPERO__
++	int dbgRequested = tile_amount, dbgDrawn = 0;
++#endif
+ 	while (tile_amount--)
+ 	{
++#ifdef __PROSPERO__
++		// unlike DrawAllBuildings this loop never checked the primitive buffer: with far regions it overran it
++		if (PRIMTAB_SIZE - (int)(plotContext.primptr - current->primtab) < 100000)
++			break;
++		dbgDrawn++;
++#endif
+ 		ppco = *tilePointers++;
+ 		
++#ifdef __PROSPERO__
++		{
++			extern XZPAIR model_tile_near[];
++			const XZPAIR& tn = model_tile_near[tileIdx++];
++			plotContext.scribble[0] = tn.x + (short)(ppco->pos.vx - tn.x);
++			plotContext.scribble[2] = tn.z + (short)(ppco->pos.vz - tn.z);
++			plotContext.scribble[1] = (ppco->pos.vy << 0x10) >> 0x11;
++		}
++#else
+ 		plotContext.scribble[0] = ppco->pos.vx;
+ 		plotContext.scribble[1] = (ppco->pos.vy << 0x10) >> 0x11;
+ 		plotContext.scribble[2] = ppco->pos.vz;
++#endif
+ 	
+ 		yang = ppco->value & 0x3f;
+ 		model_number = (ppco->value >> 6) | (ppco->pos.vy & 1) << 10;
+@@ -284,10 +306,20 @@ void DrawTILES(PACKED_CELL_OBJECT** tiles, int tile_amount)
+ 
+ 			pModel = modelpointers[model_number];
+ 
++#ifdef __PROSPERO__
++			// PGXP already corrects texture perspective; subdividing computes integer screen positions, which
++			// arrive as 2D primitives without a world position (they cannot take part in shadow mapping)
++#ifdef DYNAMIC_LIGHTING
++			(gEnableDlights ? Tile1x1Lit : Tile1x1)(pModel);
++#else
++			Tile1x1(pModel);
++#endif
++#else
+ 			if (Z < 2000)
+ 				TileNxN(pModel, 4, 75);
+ 			else
+ 				TileNxN(pModel, 2, 35);
++#endif
+ 		}
+ 		else
+ 		{
+@@ -301,6 +333,14 @@ void DrawTILES(PACKED_CELL_OBJECT** tiles, int tile_amount)
+ 		}
+ 	}
+ 	current->primptr = plotContext.primptr;
++#ifdef __PROSPERO__
++	{
++		static int dbgN = 0;
++		if (++dbgN % 90 == 0)
++			PsyX_Log("tiles: requested=%d drawn=%d primtab used=%d KB of %d KB\n", dbgRequested, dbgDrawn,
++				(int)(current->primptr - current->primtab) / 1024, PRIMTAB_SIZE / 1024);
++	}
++#endif
+ }
+ 
+ // [A] custom implemented function
+diff --git a/src_rebuild/Game/dr2locale.h b/src_rebuild/Game/dr2locale.h
+index 1e1449a..b68f6bf 100644
+--- a/src_rebuild/Game/dr2locale.h
++++ b/src_rebuild/Game/dr2locale.h
+@@ -267,8 +267,8 @@ extern char* gMissionLangTable[MAX_LANGUAGE_TEXT];
+ #define M_LTXT_ID(id)		(char*)(id)
+ 
+ // fancy logic
+-#define GET_GAME_TXT(st)		(((u_intptr)st < MAX_LANGUAGE_TEXT && st) ? gGameLangTable[(int)st] : st)
+-#define GET_MISSION_TXT(st)		(((u_intptr)st < MAX_LANGUAGE_TEXT && st) ? gMissionLangTable[(int)st] : st)
++#define GET_GAME_TXT(st)		(((u_intptr)st < MAX_LANGUAGE_TEXT && st) ? gGameLangTable[(intptr_t)st] : st)
++#define GET_MISSION_TXT(st)		(((u_intptr)st < MAX_LANGUAGE_TEXT && st) ? gMissionLangTable[(intptr_t)st] : st)
+ 
+ extern int InitStringMng();
+ extern void DeinitStringMng();
+diff --git a/src_rebuild/Game/engine/cell.h b/src_rebuild/Game/engine/cell.h
+index 07d7f59..97d4777 100644
+--- a/src_rebuild/Game/engine/cell.h
++++ b/src_rebuild/Game/engine/cell.h
+@@ -26,6 +26,9 @@ struct CELL_ITERATOR
+ 	PACKED_CELL_OBJECT* ppco;
+ 	XZPAIR nearCell;
+ 	int use_computed;
++#ifdef __PROSPERO__
++	void* farCtx;	// non-NULL while iterating a region from the far-region cache
++#endif
+ };
+ 
+ struct OUT_CELL_FILE_HEADER
+diff --git a/src_rebuild/redriver2_psxpc.cpp b/src_rebuild/redriver2_psxpc.cpp
+index 33cadfd..f23181d 100644
+--- a/src_rebuild/redriver2_psxpc.cpp
++++ b/src_rebuild/redriver2_psxpc.cpp
+@@ -470,8 +470,15 @@ void SwitchMappings(int menu)
+ 	}
+ }
+ 
++#ifdef __PROSPERO__
++#include <unistd.h>
++#endif
++
+ int main(int argc, char** argv)
+ {
++#ifdef __PROSPERO__
++	chdir("/app0/assets");
++#endif
+ 	ini_t* config;
+ 
+ #if USE_CRT_MALLOC
+@@ -571,9 +578,18 @@ int main(int argc, char** argv)
+ 		ini_sget(config, "render", "pgxpTextureMapping", "%d", &g_cfg_pgxpTextureCorrection);
+ 		ini_sget(config, "render", "pgxpZbuffer", "%d", &g_cfg_pgxpZBuffer);
+ 		ini_sget(config, "render", "bilinearFiltering", "%d", &g_cfg_bilinearFiltering);
++#ifdef __PROSPERO__
++		{ extern int g_cfg_ps5RenderScale; ini_sget(config, "render", "ps5RenderScale", "%d", &g_cfg_ps5RenderScale); }
++		{ extern int g_cfg_ps5Shadows, g_cfg_ps5ShadowSize, g_cfg_ps5ShadowDebug, g_cfg_ps5ShadowFlip; extern float g_cfg_ps5ShadowStrength; ini_sget(config, "render", "shadowMap", "%d", &g_cfg_ps5Shadows); { extern int g_cfg_ps5ShadowSplits; ini_sget(config, "render", "shadowSplits", "%d", &g_cfg_ps5ShadowSplits); } { extern int g_cfg_pgxpChain; ini_sget(config, "render", "pgxpChain", "%d", &g_cfg_pgxpChain); } ini_sget(config, "render", "shadowDebug", "%d", &g_cfg_ps5ShadowDebug); ini_sget(config, "render", "shadowFlip", "%d", &g_cfg_ps5ShadowFlip); ini_sget(config, "render", "shadowMapSize", "%d", &g_cfg_ps5ShadowSize); ini_sget(config, "render", "shadowStrength", "%f", &g_cfg_ps5ShadowStrength); }
++#endif
+ 
+ 		// configure host game
+ 		ini_sget(config, "game", "drawDistance", "%d", &gDrawDistance);
++		{ extern int gExtendedView; ini_sget(config, "game", "extendedView", "%d", &gExtendedView); }
++#ifdef __PROSPERO__
++		{ extern int gFarRegionRadius; ini_sget(config, "game", "farRegions", "%d", &gFarRegionRadius); }
++		{ extern int gShadows2D; ini_sget(config, "game", "shadows2d", "%d", &gShadows2D); }
++#endif
+ #ifdef DYNAMIC_LIGHTING
+ 		ini_sget(config, "game", "dynamicLights", "%d", &gEnableDlights);
+ #endif
+diff --git a/src_rebuild/utils/DebugOverlay.cpp b/src_rebuild/utils/DebugOverlay.cpp
+index baa1eb3..93a9ac4 100644
+--- a/src_rebuild/utils/DebugOverlay.cpp
++++ b/src_rebuild/utils/DebugOverlay.cpp
+@@ -242,7 +242,7 @@ void Debug_Line2D(SXYPAIR& pointA, SXYPAIR& pointB, CVECTOR& color)
+ 	line->b0 = color.b;
+ 
+ #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
+-	line->pgxp_index = 0xFFFF;
++	line->pgxp_index = PGXP_INDEX_NONE;
+ #endif
+ 
+ 	addPrim(current->ot, line);
+diff --git a/src_rebuild/utils/targa.cpp b/src_rebuild/utils/targa.cpp
+index ffecd62..90bc407 100644
+--- a/src_rebuild/utils/targa.cpp
++++ b/src_rebuild/utils/targa.cpp
+@@ -3,6 +3,8 @@
+ #include <string.h>
+ #include <malloc.h>
+ 
++extern "C" void PsyX_Log(const char* fmt, ...);
++
+ bool LoadTGAImage(const char* filename, u_char** data, int& width, int& height, int& bpp)
+ {
+ 	FILE* fp;
+diff --git a/src_rebuild/utils/video_source/ReadAVI.cpp b/src_rebuild/utils/video_source/ReadAVI.cpp
+index 78b5ebe..d085036 100644
+--- a/src_rebuild/utils/video_source/ReadAVI.cpp
++++ b/src_rebuild/utils/video_source/ReadAVI.cpp
+@@ -38,7 +38,9 @@
+ 
+ #include "ReadAVI.h"
+ 
++#ifndef __PROSPERO__
+ #include <iostream>
++#endif
+ #include <string.h>
+ 
+ #define ZEROIZE(x) {memset(&x, 0, sizeof(x));}
+@@ -73,6 +75,10 @@ ReadAVI::ReadAVI(const char* filename)
+ 	inFile.open(filename, ios_base::in | ios_base::binary);
+ 
+ 
++#ifdef __PROSPERO__
++	// no C++ exceptions on PS5 (no unwind tables): parse_riff() reports problems through stream state
++	parse_riff();
++#else
+ 	try {
+ 		parse_riff();
+ 	}
+@@ -83,6 +89,7 @@ ReadAVI::ReadAVI(const char* filename)
+ 			throw;
+ 		}
+ 	}
++#endif
+ }
+ 
+ ReadAVI::~ReadAVI()
+@@ -118,6 +125,12 @@ int ReadAVI::GetFrameFromIndex(frame_entry_t* frame_entry)
+ 	for (unsigned i = frame_entry->pointer; i < index_entries.size(); i++) {
+ 		if (index_entries[i].type & frame_entry->type) {
+ 			check_data_buf(index_entries[i].dwChunkLength);
++#ifdef __PROSPERO__
++			inFile.seekg(index_entries[i].dwChunkOffset, ios_base::beg);
++			read_chars_bin(data_buf, index_entries[i].dwChunkLength);
++			if (inFile.fail())
++				return -1;
++#else
+ 			try {
+ 				inFile.seekg(index_entries[i].dwChunkOffset, ios_base::beg);
+ 				read_chars_bin(data_buf, index_entries[i].dwChunkLength);
+@@ -125,6 +138,7 @@ int ReadAVI::GetFrameFromIndex(frame_entry_t* frame_entry)
+ 			catch (...) {
+ 				return -1;
+ 			}
++#endif
+ 			frame_entry->buf = data_buf;
+ 			frame_entry->pointer = i + 1;
+ 			frame_entry->stream_num = index_entries[i].stream_num;
+diff --git a/src_rebuild/utils/video_source/ReadAVI.h b/src_rebuild/utils/video_source/ReadAVI.h
+index 77bb3f2..fd5f6c4 100644
+--- a/src_rebuild/utils/video_source/ReadAVI.h
++++ b/src_rebuild/utils/video_source/ReadAVI.h
+@@ -8,7 +8,42 @@
+ #ifndef READAVI_H_
+ #define READAVI_H_
+ 
++#ifdef __PROSPERO__
++// libc++ iostreams need locale functions the PS5 libc lacks: tiny FILE*-based stand-in with the same calls
++#include <stdio.h>
++#include <vector>
++struct PS5IosBase { enum { beg = 0, in = 1, ate = 2, binary = 4 }; };
++#define ios_base PS5IosBase
++class PS5File
++{
++public:
++	PS5File() : fp(NULL), bad(false) {}
++	~PS5File() { close(); }
++	void open(const char* name, int mode)
++	{
++		close();
++		fp = fopen(name, "rb");
++		bad = (fp == NULL);
++		if (fp && (mode & ios_base::ate))
++			fseek(fp, 0, SEEK_END);
++	}
++	bool is_open() const { return fp != NULL; }
++	void close() { if (fp) fclose(fp); fp = NULL; }
++	long tellg() { return fp ? ftell(fp) : -1; }
++	void seekg(long off, int) { if (fp && fseek(fp, off, SEEK_SET) != 0) bad = true; }
++	void read(char* buf, long count)
++	{
++		if (!fp || (long)fread(buf, 1, (size_t)count, fp) != count)
++			bad = true;
++	}
++	bool fail() const { return bad; }
++private:
++	FILE* fp;
++	bool bad;
++};
++#else
+ #include <fstream>
++#endif
+ #include <vector>
+ 
+ class ReadAVI {
+@@ -145,7 +180,11 @@ private:
+ 	static chunk_type_int_t chunk_types[ChunkTypesCnt];
+ 
+ 	std::vector<index_entry_t> index_entries;
++#ifdef __PROSPERO__
++	PS5File inFile;
++#else
+ 	std::ifstream inFile;
++#endif
+ 	avi_header_t avi_header;
+ 	stream_header_t stream_header_vid;
+ 	stream_format_t stream_format_vid;
+diff --git a/src_rebuild/utils/video_source/VideoPlayer.cpp b/src_rebuild/utils/video_source/VideoPlayer.cpp
+index e66519f..6f55a62 100644
+--- a/src_rebuild/utils/video_source/VideoPlayer.cpp
++++ b/src_rebuild/utils/video_source/VideoPlayer.cpp
+@@ -13,7 +13,14 @@
+ #include "C/fmvplay.h"
+ 
+ #include <AL/al.h>
++#ifdef __PROSPERO__
++#define STB_IMAGE_IMPLEMENTATION
++#define STBI_ONLY_JPEG
++#define STBI_NO_STDIO
++#include "stb_image.h"
++#else
+ #include <jpeglib.h>
++#endif
+ #include "platform.h"
+ 
+ // Partially decompiled function from FMV EXE
+@@ -124,6 +131,15 @@ void PrintFMVText(char *str, int x, short y, int brightness)
+ 
+ int UnpackJPEG(unsigned char* src_buf, unsigned src_length, unsigned bpp, unsigned char* dst_buf, int& width, int& height)
+ {
++#ifdef __PROSPERO__
++	int comp = 0;
++	unsigned char* pixels = stbi_load_from_memory(src_buf, (int)src_length, &width, &height, &comp, 3);
++	if (!pixels)
++		return -1;
++	memcpy(dst_buf, pixels, (size_t)width * height * 3);
++	stbi_image_free(pixels);
++	return 0;
++#else
+ 	// it's rough but it works...
+ 	jpeg_decompress_struct cinfo;
+ 	jpeg_error_mgr jerr;
+@@ -149,6 +165,7 @@ int UnpackJPEG(unsigned char* src_buf, unsigned src_length, unsigned bpp, unsign
+ 	jpeg_destroy_decompress(&cinfo);
+ 
+ 	return 0;
++#endif
+ }
+ 
+ void SetupMovieRectangle(int image_w, int image_h)
+@@ -280,8 +297,15 @@ void FMVPlayerInitGL()
+ 
+ 	if(!g_FMVShader)
+ 	{
++#ifdef __PROSPERO__
++		extern ShaderID GR_PS5_PresentShader();
++		extern GLint GR_PS5_PresentTexLoc();
++		g_FMVShader = GR_PS5_PresentShader();
++		g_FMVTextureLoc = GR_PS5_PresentTexLoc();
++#else
+ 		g_FMVShader = GR_Shader_Compile(fmv_shader, false);
+ 		g_FMVTextureLoc = glGetUniformLocation(g_FMVShader, "s_texture");
++#endif
+ 	}
+ #endif
+ }
+@@ -523,10 +547,18 @@ void DoPlayFMV(RENDER_ARG* arg, int subtitles)
+ 	frame_entry.pointer = 0;
+ 
+ 	ALuint audioStreamSource;
+-	ALuint audioStreamBuffers[4];
++#ifdef __PROSPERO__
++	// deeper audio queue: decoding on the PS5 CPU can jitter, a short queue underruns
++#define FMV_AUDIO_BUFFERS 16
++#define FMV_AUDIO_START 8
++#else
++#define FMV_AUDIO_BUFFERS 4
++#define FMV_AUDIO_START 2
++#endif
++	ALuint audioStreamBuffers[FMV_AUDIO_BUFFERS];
+ 
+ 	alGenSources(1, &audioStreamSource);
+-	alGenBuffers(4, audioStreamBuffers);
++	alGenBuffers(FMV_AUDIO_BUFFERS, audioStreamBuffers);
+ 	alSourcei(audioStreamSource, AL_LOOPING, AL_FALSE);
+ 
+ 	// sound.c
+@@ -634,7 +666,7 @@ void DoPlayFMV(RENDER_ARG* arg, int subtitles)
+ 						// restart
+ 						queue_counter = 0;
+ 					}
+-					else if(numProcessed && queue_counter > 3)
++					else if(numProcessed && queue_counter > FMV_AUDIO_BUFFERS - 1)
+ 					{
+ 						// dequeue one buffer
+ 						alSourceUnqueueBuffers(audioStreamSource, 1, &qbuffer);
+@@ -643,10 +675,10 @@ void DoPlayFMV(RENDER_ARG* arg, int subtitles)
+ 				}
+ 
+ 				// for starting only
+-				if (queue_counter < 4)
++				if (queue_counter < FMV_AUDIO_BUFFERS)
+ 					QueueAudioBuffer(audioStreamBuffers[queue_counter++], audioStreamSource, frame_entry, audio_format, 0, frame_size);
+ 
+-				if((queue_counter > 1 || numProcessed == -1) && state != AL_PLAYING)
++				if((queue_counter > FMV_AUDIO_START - 1 || numProcessed == -1) && state != AL_PLAYING)
+ 					alSourcePlay(audioStreamSource);
+ 			}
+ 		}
+@@ -659,7 +691,7 @@ void DoPlayFMV(RENDER_ARG* arg, int subtitles)
+ 	}
+ 
+ 	alDeleteSources(1, &audioStreamSource);
+-	alDeleteBuffers(4, audioStreamBuffers);
++	alDeleteBuffers(FMV_AUDIO_BUFFERS, audioStreamBuffers);
+ }
+ 
+ // FMV main function
