@@ -18,7 +18,8 @@ Tested on a PS5 with **firmware 9.00**, kstuff 1.13 and ShadowMountPlus (see [Cr
 | Intro / cut-scene videos (FMV) | working (MJPEG AVI, uploaded separately) |
 | Performance | stable 30 fps (the game's own rate) at 1080p; optional 2x supersampling (internal 4K) |
 | Draw distance | far beyond the original (`extendedView`), see [Known issues](#known-issues) |
-| Real-time sun shadows | **work in progress**: cars, buildings, street objects and trees cast shadows; pedestrians being tested |
+| Real-time sun shadows | working: three cascades (about 40 cells), cars, buildings, street objects, trees and pedestrians cast shadows |
+| Fog | working, hides the pop-in at the edge of the loaded map |
 | Installable `.pkg` | not working (error `CE-100096-6` at launch); the title runs from a folder mounted by ShadowMountPlus |
 
 ## What the port changes
@@ -103,9 +104,10 @@ Logs are written to `/data/homebrew/PPSA00056/REDRIVER2.log` (read it over FTP).
 | --- | --- | --- |
 | `[render] ps5RenderScale` | `2` | `1` = native 1080p, `2` = 2x supersampling (3840x2160 internal) |
 | `[render] shadowMap` | `1` | real-time shadows on/off |
-| `[render] shadowMapSize` | `4096` | shadow map resolution (1024..8192) |
+| `[render] shadowMapSize` | `2048` | resolution of each of the 3 cascades (1024..8192) |
 | `[render] shadowStrength` | `0.5` | `0` black shadows, `1` invisible |
-| `[render] shadowSplits` | `0` | also cast shadows from the (incomplete) rendered splits; debugging aid |
+| `[render] shadowRadius` | `14` | cells around the camera whose objects cast shadows, even when out of view |
+| `[render] fog`, `fogStart`, `fogEnd`, `fogR/G/B` | `1`, `12`, `30` cells, haze colour | distance fog (colour scaled by the game's sky brightness) |
 | `[render] shadowFlip`, `shadowDebug` | `0` | debugging: reverse the light, show the shadow-map lookups (`2` = black/white) |
 | `[render] pgxpChain` | `1` | vertex-data lookup by screen position through a hash chain (`0` = original linear search) |
 | `[game] extendedView` | `48` | radius in map cells of the drawn area (`21` = original) |
@@ -116,7 +118,7 @@ Logs are written to `/data/homebrew/PPSA00056/REDRIVER2.log` (read it over FTP).
 
 * **Popping** at the edge of the loaded map: the game keeps only a 2x2 block of 32x32-cell regions in memory. A cache of
   far regions (`farRegions`) was tried and produces corrupted geometry after a while; its cause was not found.
-  Fog to hide the pop-in is planned.
+  A configurable fog hides most of it.
 * Rarely, for a few milliseconds, half of the screen shows only the background.
 * Pedestrian and car-wheel shadows are approximations or missing.
 * No `.pkg` (see Status). The `LibProsperoPkg` attempt is described in `docs/NOTES.md`.

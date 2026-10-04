@@ -586,7 +586,7 @@ index 0a32a04..16cf033 100644
  		if (plane->surface - 16U < 16)
  			plane = EventSurface(pos, plane);
 diff --git a/src_rebuild/Game/C/draw.c b/src_rebuild/Game/C/draw.c
-index c9497d8..9609bce 100644
+index c9497d8..283ca45 100644
 --- a/src_rebuild/Game/C/draw.c
 +++ b/src_rebuild/Game/C/draw.c
 @@ -1,4 +1,5 @@
@@ -639,7 +639,7 @@ index c9497d8..9609bce 100644
  
  	while (numFound--)
  	{
-@@ -240,12 +257,39 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
+@@ -240,12 +257,22 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
  			plotContext.colour = spriteColour;
  		}
  
@@ -658,28 +658,11 @@ index c9497d8..9609bce 100644
  
  		z = Apply_InvCameraMatrixAndSetMatrix((VECTOR_NOPAD*)plotContext.scribble, (MATRIX2*)&face_camera);
  
-+#ifdef __PROSPERO__
-+		if (z < 14000)
-+		{
-+			extern SVECTOR sun_position[4], moon_position[4];
-+			const SVECTOR* sunv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
-+			POLYFT4* sp = GET_MODEL_DATA(POLYFT4, model, poly_block);
-+			SVECTOR* sv = GET_MODEL_DATA(SVECTOR, model, vertices);
-+			int np = (u_int)model->num_polys;
-+			while (np-- > 0)
-+			{
-+				const void* vv[4] = { &sv[sp->v0], &sv[sp->v1], &sv[sp->v3], &sv[sp->v2] };
-+				const unsigned char* uu[4] = { (const unsigned char*)&sp->uv0, (const unsigned char*)&sp->uv1, (const unsigned char*)&sp->uv3, (const unsigned char*)&sp->uv2 };
-+				PGXP_ShadowCasterSprite(vv, uu, texture_pages[sp->texture_set], texture_cluts[sp->texture_set][sp->texture_id], &inv_camera_matrix.m[0][0], sunv->vx, sunv->vy, sunv->vz);
-+				sp++;
-+			}
-+		}
-+#endif
 +
  		if (z < 1000)
  		{
  			POLYFT4* src;
-@@ -554,11 +598,11 @@ void DrawAllTheCars(int view)
+@@ -554,11 +581,11 @@ void DrawAllTheCars(int view)
  		for (i = 0; i < num_cars_to_draw; i++)
  		{
  			// Don't exceed draw buffers
@@ -693,22 +676,15 @@ index c9497d8..9609bce 100644
  				gForceLowDetailCars = 1;
  
  			if (cars_to_draw[i]->controlType == CONTROL_TYPE_PLAYER)
-@@ -714,6 +758,14 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
+@@ -714,6 +741,7 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
  	{
  		ptype = polys->id & 31;
  
-+#ifdef __PROSPERO__
-+		if (ptype == 11 || ptype == 21 || ptype == 23)
-+		{
-+			PGXP_ShadowCasterTri(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
-+			PGXP_ShadowCasterTri(&srcVerts[polys->v1], &srcVerts[polys->v2], &srcVerts[polys->v3]);
-+		}
-+#endif
 +
  		// skip certain polygons
  		if (ptype != 11 && ptype != 21 && ptype != 23)
  		{
-@@ -992,10 +1044,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
+@@ -992,10 +1020,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
  
  		plotContext.ot = ot + zbias * 4;
  
@@ -723,19 +699,112 @@ index c9497d8..9609bce 100644
  
  		drawlimit = (int)(current->primptr - current->primtab);
  
-@@ -1057,6 +1113,11 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
+@@ -1057,6 +1089,7 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
  			continue;
  		}
  
-+#ifdef __PROSPERO__
-+		PGXP_ShadowCasterTri(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
-+		PGXP_ShadowCasterTri(&srcVerts[polys->v1], &srcVerts[polys->v2], &srcVerts[polys->v3]);
-+#endif
 +
  		// perform transform
  		gte_ldv3(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
  		gte_rtpt();
-@@ -1302,6 +1363,17 @@ void DrawMapPSX(int* comp_val)
+@@ -1273,6 +1306,96 @@ struct DrawMapData
+ };
+ 
+ // [D] [T]
++#ifdef __PROSPERO__
++int gShadowCastRadius = 14;	// cells around the camera whose objects cast shadows, whether the camera sees them or not
++
++// One object of the map as a shadow caster: the whole model, nothing culled (the game's own walk only draws what the
++// camera sees, but the shadow of a building beside or behind the camera still falls in view).
++static void EmitObjectShadowCaster(PACKED_CELL_OBJECT* ppco, MODEL* model, XZPAIR* nearCell)
++{
++	extern SVECTOR sun_position[4], moon_position[4];
++	SVECTOR* srcVerts = GET_MODEL_DATA(SVECTOR, model, vertices);
++
++	if (model->shape_flags & SHAPE_FLAG_SPRITE)
++	{
++		// trees...: textured quads turned to face the sun
++		int scribble[3];
++		scribble[0] = nearCell->x + (short)(ppco->pos.vx - nearCell->x);
++		scribble[2] = nearCell->z + (short)(ppco->pos.vz - nearCell->z);
++		scribble[1] = (ppco->pos.vy << 0x10) >> 0x11;
++
++		Apply_InvCameraMatrixAndSetMatrix((VECTOR_NOPAD*)scribble, (MATRIX2*)&face_camera);
++
++		const SVECTOR* sunv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
++		POLYFT4* sp = GET_MODEL_DATA(POLYFT4, model, poly_block);
++		int np = (u_int)model->num_polys;
++		while (np-- > 0)
++		{
++			const void* vv[4] = { &srcVerts[sp->v0], &srcVerts[sp->v1], &srcVerts[sp->v3], &srcVerts[sp->v2] };
++			const unsigned char* uu[4] = { (const unsigned char*)&sp->uv0, (const unsigned char*)&sp->uv1, (const unsigned char*)&sp->uv3, (const unsigned char*)&sp->uv2 };
++			PGXP_ShadowCasterSprite(vv, uu, texture_pages[sp->texture_set], texture_cluts[sp->texture_set][sp->texture_id], &inv_camera_matrix.m[0][0], sunv->vx, sunv->vy, sunv->vz);
++			sp++;
++		}
++		return;
++	}
++
++	if ((model->shape_flags & (SHAPE_FLAG_WATER | SHAPE_FLAG_TILE)) || (model->flags2 & (MODEL_FLAG_PATH | MODEL_FLAG_GRASS)))
++		return;
++
++	CELL_OBJECT* cop = UnpackCellObject(ppco, nearCell);
++	MATRIX2 cmat;
++	const int yang = ppco->value & 63;
++	if (yang > 0)
++		MulMatrix0(&inv_camera_matrix, (MATRIX*)&matrixtable[yang], (MATRIX*)&cmat);
++	else
++		*(MATRIX*)&cmat = inv_camera_matrix;
++
++	Apply_InvCameraMatrixAndSetMatrix(&cop->pos, &cmat);
++
++	plotContext.polySizes = PolySizes;
++	ConvertPolygonTypes(model, &plotContext);
++
++	PL_POLYFT4* polys = GET_MODEL_DATA(PL_POLYFT4, model, poly_block);
++	int i = model->num_polys;
++	while (i-- > 0)
++	{
++		const u_char ptype = polys->id & 31;
++		if (ptype == 11 || ptype == 21 || ptype == 23)
++		{
++			PGXP_ShadowCasterTri(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
++			PGXP_ShadowCasterTri(&srcVerts[polys->v1], &srcVerts[polys->v2], &srcVerts[polys->v3]);
++		}
++		polys = (PL_POLYFT4*)((char*)polys + plotContext.polySizes[ptype]);
++	}
++}
++
++static void EmitShadowCasters(int camCellX, int camCellZ, int level)
++{
++	CELL_ITERATOR ci;
++	const int r = gShadowCastRadius;
++
++	for (int dz = -r; dz <= r; dz++)
++	{
++		for (int dx = -r; dx <= r; dx++)
++		{
++			if (dx * dx + dz * dz > r * r)
++				continue;
++
++			const int cx = camCellX + dx, cz = camCellZ + dz;
++			if (cx < 0 || cx >= cells_across || cz < 0 || cz >= cells_down)
++				continue;
++
++			for (PACKED_CELL_OBJECT* ppco = GetFirstPackedCop(cx, cz, &ci, 0, level); ppco; ppco = GetNextPackedCop(&ci))
++			{
++				MODEL* model = modelpointers[(ppco->value >> 6) | ((ppco->pos).vy & 1) << 10];
++				if (model)
++					EmitObjectShadowCaster(ppco, model, &ci.nearCell);
++			}
++		}
++	}
++}
++#endif
++
+ void DrawMapPSX(int* comp_val)
+ {
+ 	CELL_OBJECT* cop;
+@@ -1302,6 +1425,16 @@ void DrawMapPSX(int* comp_val)
  
  	SetupDrawMapPSX();
  
@@ -745,7 +814,6 @@ index c9497d8..9609bce 100644
 +		extern SVECTOR sun_position[4], moon_position[4];
 +		extern void GR_PS5_SetShadowParams(int sx, int sy, int sz, const short* m, int cx, int cy, int cz);
 +		const SVECTOR* sunv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
-+		PGXP_ShadowCasterReset();
 +		GR_PS5_SetShadowParams(sunv->vx, sunv->vy, sunv->vz, &inv_camera_matrix.m[0][0], camera_position.vx, camera_position.vy, camera_position.vz);
 +	}
 +#endif
@@ -753,7 +821,7 @@ index c9497d8..9609bce 100644
  	// clean cell cache
  	ClearCopUsage();
  
-@@ -1330,8 +1402,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1330,8 +1463,12 @@ void DrawMapPSX(int* comp_val)
  		drawData.farClipLimit = farClip2Player;
  	else
  		drawData.farClipLimit = 60000;
@@ -766,7 +834,24 @@ index c9497d8..9609bce 100644
  #endif
  
  	drawData.tiles_found = 0;
-@@ -1356,12 +1432,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1342,6 +1479,16 @@ void DrawMapPSX(int* comp_val)
+ 	
+ 	drawData.cellzpos = current_cell_z;
+ 	drawData.cellxpos = current_cell_x;
++#ifdef __PROSPERO__
++	{
++		extern double PsyX_NowMs();
++		static int emitN = 0; static double emitAcc = 0;
++		const double t0 = PsyX_NowMs();
++		EmitShadowCasters(current_cell_x, current_cell_z, drawData.cellLevel);
++		emitAcc += PsyX_NowMs() - t0;
++		if (++emitN == 120) { extern void PsyX_Log(const char*, ...); PsyX_Log("[Psy-X] shadow emit: %.2f ms/frame, tris=%d sprites=%d\n", emitAcc / 120.0, PGXP_ShadowCasterCount(), PGXP_ShadowCasterSpriteCount()); emitN = 0; emitAcc = 0; }
++	}
++#endif
+ 
+ 	PVS_ptr = CurrentPVS + 220;
+ 
+@@ -1356,12 +1503,25 @@ void DrawMapPSX(int* comp_val)
  	else
  		distScale = goFaster & 31;
  
@@ -794,7 +879,7 @@ index c9497d8..9609bce 100644
  		{
  			// clamped vis values
  			int vis_h = MIN(MAX(hloop, -9), PVS_CELL_COUNT / 2);
-@@ -1369,26 +1458,51 @@ void DrawMapPSX(int* comp_val)
+@@ -1369,26 +1529,51 @@ void DrawMapPSX(int* comp_val)
  
  			cellx = drawData.cellxpos + hloop;
  			cellz = drawData.cellzpos + vloop;
@@ -847,7 +932,7 @@ index c9497d8..9609bce 100644
  
  							if ((model->flags2 & MODEL_FLAG_ANIMOBJ) && drawData.anim_objs_found < MAX_DRAWN_ANIMATING)
  							{
-@@ -1452,7 +1566,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1452,7 +1637,12 @@ void DrawMapPSX(int* comp_val)
  								}
  
  								if (drawData.tiles_found < MAX_DRAWN_TILES)
@@ -860,7 +945,7 @@ index c9497d8..9609bce 100644
  							}
  							else
  							{
-@@ -1523,6 +1642,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1523,6 +1713,25 @@ void DrawMapPSX(int* comp_val)
  	PrintString(tempBuf, 10, 120);
  #endif
  
@@ -1005,7 +1090,7 @@ index d62f17e..e60e722 100644
  
  	homepath = getenv(HOME_ENV); // "USERPROFILE"
 diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
-index 91d8bb8..db076db 100644
+index 91d8bb8..a22b166 100644
 --- a/src_rebuild/Game/C/main.c
 +++ b/src_rebuild/Game/C/main.c
 @@ -1826,7 +1826,6 @@ int redriver2_main(int argc, char** argv)
@@ -1040,6 +1125,16 @@ index 91d8bb8..db076db 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", "Unable to load language files!\n\nSee console for details", NULL);
  		return -1;
  	}
+@@ -2221,6 +2221,9 @@ void RenderGame2(int view)
+ 	int notInDreaAndStevesEvilLair;
+ 
+ 	CurrentPlayerView = view;
++#ifdef __PROSPERO__
++	PGXP_ShadowCasterReset();
++#endif
+ 	InitCamera(&player[view]);
+ 
+ #ifndef PSX
 diff --git a/src_rebuild/Game/C/map.c b/src_rebuild/Game/C/map.c
 index b79a956..799b2f3 100644
 --- a/src_rebuild/Game/C/map.c
@@ -1076,7 +1171,7 @@ index 5b29293..33d5693 100644
  		loadsize = length;
  
 diff --git a/src_rebuild/Game/C/motion_c.c b/src_rebuild/Game/C/motion_c.c
-index c1842b5..af16312 100644
+index c1842b5..c8c58af 100644
 --- a/src_rebuild/Game/C/motion_c.c
 +++ b/src_rebuild/Game/C/motion_c.c
 @@ -610,7 +610,7 @@ void DrawBodySprite(LPPEDESTRIAN pDrawingPed, int boneId, VERTTYPE v1[2], VERTTY
@@ -1088,7 +1183,38 @@ index c1842b5..af16312 100644
  		PGXPVData vdata1, vdata2;
  		PGXP_GetCacheData(&vdata1, PGXP_LOOKUP_VALUE(v1[0], v1[1]), pgxpIdx);
  		PGXP_GetCacheData(&vdata2, PGXP_LOOKUP_VALUE(v2[0], v2[1]), pgxpIdx);
-@@ -1810,6 +1810,12 @@ void InitTannerShadow(void)
+@@ -1027,6 +1027,15 @@ void DrawSprite(LPPEDESTRIAN pDrawingPed, BONE* pBone, SVECTOR* vJPos)
+ 	data[1].vy = vJPos[pBone->pParent->id & 127].vy + pDrawingPed->position.vy - camera_position.vy;
+ 	data[1].vz = vJPos[pBone->pParent->id & 127].vz + pDrawingPed->position.vz - camera_position.vz;
+ 
++#ifdef __PROSPERO__
++	if (!bDoingShadow)
++	{
++		const float a[3] = { (float)data[0].vx, (float)data[0].vy, (float)data[0].vz };
++		const float b[3] = { (float)data[1].vx, (float)data[1].vy, (float)data[1].vz };
++		PGXP_ShadowCasterLimbW(a, b, (float)(MainPed[pBone->id & 127].cWidth + 3) * 2.0f, &inv_camera_matrix.m[0][0]);
++	}
++#endif
++
+ 	gte_ldv0(&data[0]);
+ 	gte_ldv1(&data[1]);
+ 
+@@ -1514,6 +1523,14 @@ void DrawCiv(LPPEDESTRIAN pPed)
+ 	gte_MulMatrix0(&inv_camera_matrix, &workmatrix, &workmatrix);
+ 	gte_SetRotMatrix(&workmatrix);
+ 
++#ifdef __PROSPERO__
++	if (!bDoingShadow)
++	{
++		for (int b = 0; b < 15; b++)
++			PGXP_ShadowCasterLimbG(&srLerpData[b * 2], &srLerpData[b * 2 + 1], (float)(MainPed[boneIdvals[b] & 127].cWidth + 3) * 2.0f, &inv_camera_matrix.m[0][0]);
++	}
++#endif
++
+ 	gte_ldv3(&srLerpData[0], &srLerpData[1], &srLerpData[2]);
+ 	gte_rtpt();
+ 	gte_stsz(&gCurrentZ);
+@@ -1810,6 +1827,12 @@ void InitTannerShadow(void)
  // [D] [T]
  void TannerShadow(LPPEDESTRIAN pDrawingPed, VECTOR* pPedPos, SVECTOR* pLightPos, CVECTOR* col, short angle)
  {
@@ -1102,16 +1228,17 @@ index c1842b5..af16312 100644
  	DR_ENV* dr_env;
  	SVECTOR vert[4];
 diff --git a/src_rebuild/Game/C/pedest.c b/src_rebuild/Game/C/pedest.c
-index b2cff4c..115a11d 100644
+index b2cff4c..64a8197 100644
 --- a/src_rebuild/Game/C/pedest.c
 +++ b/src_rebuild/Game/C/pedest.c
-@@ -485,6 +485,13 @@ void DrawAllPedestrians(void)
+@@ -485,6 +485,14 @@ void DrawAllPedestrians(void)
  		if (PositionVisible((VECTOR*)&pPed->position) &&
  			FrustrumCheck((VECTOR*)&pPed->position, 60) != -1)
  		{
 +#ifdef __PROSPERO__
++			if (pPed->pedType == OTHER_MODEL || pPed->pedType == OTHER_SPRITE)
 +			{
-+				// pedestrians cast a simple upright box (y is down)
++				// pedestrians drawn another way cast a simple upright box (y is down); the others cast their skeleton
 +				const float c[3] = { (float)(pPed->position.vx - camera_position.vx), (float)(pPed->position.vy - camera_position.vy), (float)(pPed->position.vz - camera_position.vz) };
 +				PGXP_ShadowCasterBox(c, 60.0f, -300.0f, 100.0f, &inv_camera_matrix.m[0][0]);
 +			}
@@ -1148,6 +1275,24 @@ index 4088abe..1c4653b 100644
  	MVERTEX subdivVerts[5][5];
  	SVECTOR points[4];
  
+diff --git a/src_rebuild/Game/C/sky.c b/src_rebuild/Game/C/sky.c
+index 1cf3a6a..b835d30 100644
+--- a/src_rebuild/Game/C/sky.c
++++ b/src_rebuild/Game/C/sky.c
+@@ -960,6 +960,13 @@ void DrawSkyDome(void)
+ 
+ 	calc_sky_brightness(&skycolor);
+ 
++#ifdef __PROSPERO__
++	{
++		extern void GR_PS5_SetFog(int r, int g, int b);
++		GR_PS5_SetFog(skycolor.r, skycolor.g, skycolor.b);
++	}
++#endif
++
+ 	skyOfs.vy = sky_y_offset[GameLevel];
+ 	gte_SetRotMatrix(&inv_camera_matrix);
+ 	gte_SetTransVector(&skyOfs);
 diff --git a/src_rebuild/Game/C/sound.c b/src_rebuild/Game/C/sound.c
 index b295be6..cc4fb73 100644
 --- a/src_rebuild/Game/C/sound.c
@@ -1314,7 +1459,7 @@ index 07d7f59..97d4777 100644
  
  struct OUT_CELL_FILE_HEADER
 diff --git a/src_rebuild/redriver2_psxpc.cpp b/src_rebuild/redriver2_psxpc.cpp
-index 33cadfd..f23181d 100644
+index 33cadfd..90eac4a 100644
 --- a/src_rebuild/redriver2_psxpc.cpp
 +++ b/src_rebuild/redriver2_psxpc.cpp
 @@ -470,8 +470,15 @@ void SwitchMappings(int menu)
@@ -1339,7 +1484,7 @@ index 33cadfd..f23181d 100644
  		ini_sget(config, "render", "bilinearFiltering", "%d", &g_cfg_bilinearFiltering);
 +#ifdef __PROSPERO__
 +		{ extern int g_cfg_ps5RenderScale; ini_sget(config, "render", "ps5RenderScale", "%d", &g_cfg_ps5RenderScale); }
-+		{ extern int g_cfg_ps5Shadows, g_cfg_ps5ShadowSize, g_cfg_ps5ShadowDebug, g_cfg_ps5ShadowFlip; extern float g_cfg_ps5ShadowStrength; ini_sget(config, "render", "shadowMap", "%d", &g_cfg_ps5Shadows); { extern int g_cfg_ps5ShadowSplits; ini_sget(config, "render", "shadowSplits", "%d", &g_cfg_ps5ShadowSplits); } { extern int g_cfg_pgxpChain; ini_sget(config, "render", "pgxpChain", "%d", &g_cfg_pgxpChain); } ini_sget(config, "render", "shadowDebug", "%d", &g_cfg_ps5ShadowDebug); ini_sget(config, "render", "shadowFlip", "%d", &g_cfg_ps5ShadowFlip); ini_sget(config, "render", "shadowMapSize", "%d", &g_cfg_ps5ShadowSize); ini_sget(config, "render", "shadowStrength", "%f", &g_cfg_ps5ShadowStrength); }
++		{ extern int g_cfg_ps5Shadows, g_cfg_ps5ShadowSize, g_cfg_ps5ShadowDebug, g_cfg_ps5ShadowFlip; extern float g_cfg_ps5ShadowStrength; ini_sget(config, "render", "shadowMap", "%d", &g_cfg_ps5Shadows); { extern int gShadowCastRadius; ini_sget(config, "render", "shadowRadius", "%d", &gShadowCastRadius); } { extern int g_cfg_ps5Fog, g_cfg_ps5FogStart, g_cfg_ps5FogEnd, g_cfg_ps5FogR, g_cfg_ps5FogG, g_cfg_ps5FogB; ini_sget(config, "render", "fog", "%d", &g_cfg_ps5Fog); ini_sget(config, "render", "fogStart", "%d", &g_cfg_ps5FogStart); ini_sget(config, "render", "fogEnd", "%d", &g_cfg_ps5FogEnd); ini_sget(config, "render", "fogR", "%d", &g_cfg_ps5FogR); ini_sget(config, "render", "fogG", "%d", &g_cfg_ps5FogG); ini_sget(config, "render", "fogB", "%d", &g_cfg_ps5FogB); } { extern int g_cfg_ps5ShadowSplits; ini_sget(config, "render", "shadowSplits", "%d", &g_cfg_ps5ShadowSplits); } { extern int g_cfg_pgxpChain; ini_sget(config, "render", "pgxpChain", "%d", &g_cfg_pgxpChain); } ini_sget(config, "render", "shadowDebug", "%d", &g_cfg_ps5ShadowDebug); ini_sget(config, "render", "shadowFlip", "%d", &g_cfg_ps5ShadowFlip); ini_sget(config, "render", "shadowMapSize", "%d", &g_cfg_ps5ShadowSize); ini_sget(config, "render", "shadowStrength", "%f", &g_cfg_ps5ShadowStrength); }
 +#endif
  
  		// configure host game
