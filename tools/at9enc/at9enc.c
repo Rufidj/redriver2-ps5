@@ -104,6 +104,7 @@ typedef struct
 	int gval;				/* gradient value at the high end, 0..31 */
 	int gv0;				/* gradient value at the low end (>= gval) */
 	int gradient[MAXU + 1];
+	int gmode, gstart, gbound;		/* gradient mode (0 or 1), start unit (mode 1), boundary */
 	int sf[2][MAXU + 1];
 	int pc[2][MAXU], pf[2][MAXU], cbs[2][MAXU];
 	float coef[2][N];
@@ -111,10 +112,11 @@ typedef struct
 
 static void calc_gradient(Blk *b)
 {
-	uint8_t curve[31];
-	const int r0 = 0, r1 = 31;
+	uint8_t curve[32];
+	int r0, r1, v0, v1;
+	if (b->gmode == 1) { r0 = b->gstart; r1 = 31; v0 = b->gval; v1 = 31; }
+	else { r0 = 0; r1 = 31; v0 = b->gv0; v1 = b->gval; }
 	for (int j = 0; j < r1 - r0; j++) curve[j] = at9_tab_b_dist[(j * 48) / (r1 - r0)];
-	const int v0 = b->gv0, v1 = b->gval;
 	const int values = v1 - v0;
 	const int sign = 1 - 2 * (values < 0);
 	const int base = v0 + sign;
@@ -125,10 +127,28 @@ static void calc_gradient(Blk *b)
 
 static void calc_precision(Blk *b, int ch)
 {
+	int mask[MAXU + 1];
+	memset(mask, 0, sizeof(mask));
+	for (int i = 1; i < b->qcnt; i++)
+	{
+		const int delta = abs(b->sf[ch][i] - b->sf[ch][i - 1]) - 1;
+		if (delta > 0)
+		{
+			const int neg = b->sf[ch][i - 1] > b->sf[ch][i];
+			mask[i - neg] += delta < 5 ? delta : 5;
+		}
+	}
 	for (int i = 0; i < b->qcnt; i++)
 	{
-		int p = b->sf[ch][i] - b->gradient[i];
+		int p;
+		if (b->gmode == 1)
+		{
+			p = b->sf[ch][i] + mask[i] - b->gradient[i];
+			if (p >= 0) p >>= 1;
+		}
+		else p = b->sf[ch][i] - b->gradient[i];
 		if (p < 1) p = 1;
+		if (i < b->gbound) p++;
 		b->pf[ch][i] = 0;
 		if (p > 15) { b->pf[ch][i] = (p < 30 ? p : 30) - 15; p = 15; }
 		b->pc[ch][i] = p;
@@ -286,6 +306,8 @@ static void write_fine(BW *w, Blk *b, int ch)
 static const int bc_to_q[19] = { 0, 4, 8, 10, 12, 13, 14, 15, 16, 18, 20, 21, 22, 23, 24, 25, 26, 28, 30 };
 
 static int g_tilt = 4;
+static int g_gmode = 1;
+static int g_bound = 12;
 
 static void make_block(Blk *b, int gval)
 {
@@ -308,6 +330,9 @@ static void make_block(Blk *b, int gval)
 	while (bc < 18 && bc_to_q[bc] < cutoff) bc++;
 	b->band_count = bc;
 	b->qcnt = bc_to_q[bc];
+	b->gmode = g_gmode;
+	b->gstart = b->qcnt > 4 ? b->qcnt - 3 : 1;
+	b->gbound = g_bound < b->qcnt ? g_bound : b->qcnt;
 	calc_gradient(b);
 	for (int ch = 0; ch < 2; ch++)
 	{
@@ -325,12 +350,20 @@ static int write_block(BW *w, Blk *b, int first)
 	bw_put(w, 4, b->band_count - 3);
 	bw_put(w, 4, b->band_count - 3);	/* stereo band: no intensity stereo */
 	bw_put(w, 1, 0);			/* no band extension */
-	bw_put(w, 2, 0);			/* gradient mode 0 */
-	bw_put(w, 6, 0);
-	bw_put(w, 6, 30);
-	bw_put(w, 5, b->gv0);
-	bw_put(w, 5, b->gval);
-	bw_put(w, 4, 0);			/* boundary */
+	bw_put(w, 2, b->gmode);			/* gradient mode */
+	if (b->gmode == 1)
+	{
+		bw_put(w, 5, b->gstart);
+		bw_put(w, 5, b->gval);
+	}
+	else
+	{
+		bw_put(w, 6, 0);
+		bw_put(w, 6, 30);
+		bw_put(w, 5, b->gv0);
+		bw_put(w, 5, b->gval);
+	}
+	bw_put(w, 4, b->gbound);		/* boundary: the lowest units get one more bit of precision */
 	bw_put(w, 1, 0);			/* base channel 0 */
 	bw_put(w, 1, 0);			/* no intensity signs */
 	bw_put(w, 1, 0);			/* no band extension data */
@@ -420,6 +453,8 @@ int main(int argc, char **argv)
 	if (argc < 3) { fprintf(stderr, "usage: %s in.wav out.at9 [bytes per superframe, default 512]\n", argv[0]); return 1; }
 	int sfBytes = argc > 3 ? atoi(argv[3]) : 0;
 	if (getenv("AT9_TILT")) g_tilt = atoi(getenv("AT9_TILT"));
+	if (getenv("AT9_GMODE")) g_gmode = atoi(getenv("AT9_GMODE"));
+	if (getenv("AT9_BOUND")) g_bound = atoi(getenv("AT9_BOUND"));
 	if (getenv("AT9_MDCT_SCALE")) g_mdctScale = (float)atof(getenv("AT9_MDCT_SCALE"));
 
 	init_tables();
