@@ -317,10 +317,10 @@ static void make_block(Blk *b, int gval)
 	}
 }
 
-static int write_block(BW *w, Blk *b)
+static int write_block(BW *w, Blk *b, int first)
 {
 	const int64_t start = w->pos;
-	bw_put(w, 1, 0);			/* first in packet */
+	bw_put(w, 1, first ? 0 : 1);	/* 0 = first frame of the superframe (the others carry 1, like the Sony encoder) */
 	bw_put(w, 1, 0);			/* no parameter reuse */
 	bw_put(w, 4, b->band_count - 3);
 	bw_put(w, 4, b->band_count - 3);	/* stereo band: no intensity stereo */
@@ -465,11 +465,11 @@ int main(int argc, char **argv)
 				const int mid = (lo + hi) / 2;
 				make_block(&blk, mid);
 				BW tw = { tmp, 0, sizeof(tmp) * 8 };
-				const int bits = write_block(&tw, &blk);
+				const int bits = write_block(&tw, &blk, fi == 0);
 				if (bits <= budget) { bestG = mid; hi = mid - 1; } else lo = mid + 1;
 			}
 			make_block(&blk, bestG);
-			write_block(&w, &blk);
+			write_block(&w, &blk, fi == 0);
 			if (w.pos > (int64_t)sfBytes * 8) { fprintf(stderr, "superframe %d overflow\n", sfi); return 1; }
 		}
 		totalBits += w.pos;

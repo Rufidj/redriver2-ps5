@@ -1,8 +1,8 @@
 #!/bin/bash
 # Builds ps5/app/sce_sys/snd0.at9 (the music the PS5 home screen plays while the title is selected) from any audio file.
 #
-#   scripts/make-snd0.sh song.mp3 [seconds]
-#   scripts/make-snd0.sh song.mp3 [seconds] /path/to/ps4_at9tool.exe     (Sony's encoder instead of tools/at9enc)
+#   scripts/make-snd0.sh song.mp3 [seconds] /path/to/PS4_at9tool.exe     (Sony's encoder, through wine on Linux: recommended)
+#   scripts/make-snd0.sh song.mp3 [seconds]                              (tools/at9enc, experimental: audible interference on the console)
 #
 # The Shell accepts 48 kHz ATRAC9 in RIFF with loop data and at most 2 MiB (<= 192 kb/s stereo): about 87 seconds fit at
 # 192 kb/s, a longer song is encoded at a lower rate (give `seconds` to cut an excerpt instead). Needs ffmpeg.
