@@ -67,8 +67,8 @@ modify anything else in the boilerplate.
 Put the title's artwork in `ps5/app/sce_sys/` if you want it: `icon0.png` (512x512) and optionally `pic0.dds` /
 `pic1.dds` (backgrounds, 3840x2160 BC7). They are not included because they are derived from the game's artwork.
 The music the home screen plays while the title is selected is `snd0.at9` (48 kHz ATRAC9, at most 2 MiB):
-`scripts/make-snd0.sh song.mp3 /path/to/ps4_at9tool.exe` builds it. The encoder is a Sony tool and is not included;
-the song is yours to supply.
+`scripts/make-snd0.sh song.mp3` builds it with `tools/at9enc`, a small ATRAC9 encoder written for this (Sony's own
+encoder is Windows-only and not redistributable; it can still be used, see the script). The song is yours to supply.
 
 ## Game data
 
@@ -132,6 +132,7 @@ ps5/app/        the PS5 title: src (heap, file/save glue, GL stubs), sce_sys/par
 ps5/build/      Makefile (game -> libred2.a), software OpenAL, compatibility headers, FTP deploy script, bundled third-party sources
 ps5/assets/     the default config.ini
 scripts/        setup.sh, build.sh, make-patches.sh, make-snd0.sh, env.sh.example
+tools/at9enc/   ATRAC9 encoder for the home-screen music (LGPL 2.1+)
 docs/           NOTES.md (what was learnt about the console), SHADOWS.md (shadow design)
 ```
 
@@ -153,6 +154,7 @@ This port stands on the work of many people. Please support the upstream project
 * **SDL2**: Sam Lantinga and the SDL contributors (zlib license). **Mesa**: the Mesa developers.
 * **LLVM / Clang**: the LLVM Project. `ps5/build/third_party/emutls.c` is LLVM compiler-rt (Apache-2.0 with LLVM exception).
 * **stb_image**: Sean Barrett (public domain / MIT), bundled in `ps5/build/third_party/`.
+* **FFmpeg**: Rostislav Pehlivanov wrote its ATRAC9 decoder, whose tables and bitstream description `tools/at9enc` is built on (LGPL 2.1+).
 * **LibProsperoPkg** (drakmor), tried for a `.pkg`; not part of the result.
 * The attributions above are from memory of each project's public pages; check each upstream repository for its full contributor list.
 * PS5 port, shadow system, draw-distance work and glue code: Rufidj, with the help of Claude (Anthropic).
