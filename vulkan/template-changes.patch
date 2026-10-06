@@ -1,0 +1,83 @@
+diff --git a/base/vulkanexamplebase.h b/base/vulkanexamplebase.h
+index 684f6d1..9f9edb2 100644
+--- a/base/vulkanexamplebase.h
++++ b/base/vulkanexamplebase.h
+@@ -437,7 +437,7 @@ public:
+ 	void windowResize();
+ 
+ 	/** @brief Entry point for the main render loop */
+-	void renderLoop();
++	virtual void renderLoop();
+ 
+ 	/** @brief Adds the drawing commands for the ImGui overlay to the given command buffer */
+ 	void drawUI(const VkCommandBuffer commandBuffer);
+diff --git a/ps5/CMakeLists.txt b/ps5/CMakeLists.txt
+index b062de7..edef083 100644
+--- a/ps5/CMakeLists.txt
++++ b/ps5/CMakeLists.txt
+@@ -83,6 +83,7 @@ add_library(samples OBJECT
+ 	src/launcher.cpp
+ 	src/samples.cpp
+ 	src/example_ps5.cpp
++	src/red2_render.cpp
+ 	${platform_source})
+ target_compile_definitions(samples PRIVATE
+ 	VK_EXAMPLE_PS5
+diff --git a/ps5/src/main.cpp b/ps5/src/main.cpp
+index 6d9badc..befcb49 100644
+--- a/ps5/src/main.cpp
++++ b/ps5/src/main.cpp
+@@ -369,12 +369,16 @@ void runMenu()
+ 
+ } // namespace
+ 
++// REDRIVER2's own main (game/libred2vk.a, renamed): the title is the game
++extern "C" int red2_main(int argc, char **argv) __attribute__((weak));
++
+ int main()
+ {
+ 	platform_init(PS5_TITLE_NAME);
+ 	// The samples report on std::cout and std::cerr: both reach klog
+ 	std::cout.rdbuf(std::cerr.rdbuf());
+-	pad_open();
++	// the game reads the pad through SDL
++	if (!red2_main) pad_open();
+ #if defined(PS5_HOST_REFERENCE)
+ 	// The PC's Vulkan loader
+ 	if (volkInitialize() != VK_SUCCESS) {
+diff --git a/ps5/tools/link-title.sh b/ps5/tools/link-title.sh
+index 0d6d482..4aa6c60 100755
+--- a/ps5/tools/link-title.sh
++++ b/ps5/tools/link-title.sh
+@@ -66,13 +66,29 @@ if $platform_has_localeconv && [[ " ${radv_link_flags[*]} " != *" --defsym=local
+     printf '{\n    local:\n        localeconv;\n};\n' > "$work/link/localeconv-local.map"
+     radv_link_flags+=(--defsym=localeconv=ps5_localeconv --version-script "$work/link/localeconv-local.map")
+ fi
++# The game: its archives (game/libred2vk.a and what it needs) and the wraps its glue binds
++game_inputs=()
++if [[ -f $root/game/libred2vk.a ]]; then
++    radv_link_flags+=(--wrap=fopen --wrap=mkdir -u red2_main -u main --allow-multiple-definition --error-limit=0)
++    game_inputs=("$root/game/libred2vk.a" ${RED2_EXTRA_ARCHIVES:-})
++fi
++link_once() {
+ "$sdk/bin/prospero-lld" "${radv_linker_script[@]}" --eh-frame-hdr "${radv_link_flags[@]}" \
+-    --version-script "$native/app-symbols.map" --exclude-libs=ALL \
++    --version-script "$native/app-symbols.map" "$@" --exclude-libs=ALL \
+     -e _start -o "$work/link/llvm-pie.elf" \
+     "$work/link/obj/app_crt.o" "${objects[@]}" \
+     "$work/link/stubs/libSceAgc.so" "$work/link/stubs/libSceAgcDriver.so" \
+-    "${radv_link_inputs[@]}" \
++    "${game_inputs[@]}" "${radv_link_inputs[@]}" \
+     --as-needed "$sdk"/target/lib/*.so
++}
++# Mesa's dispatch tables name thousands of entry points no object defines through
++# weak references: with default visibility they land in .dynsym as undefined, and the
++# converter wants a provider for each. Defined as the absolute address 0 they are
++# the same null at run time and leave the import table.
++link_once
++"$sdk/bin/llvm-nm" -D "$work/link/llvm-pie.elf" | awk '$1 == "w" { printf "--defsym=%s=0\n", $2 }' \
++    > "$work/link/weak-null.rsp"
++link_once "@$work/link/weak-null.rsp"
+ # A title whose localeconv is still the console's reads every glTF fraction as 0
+ # (black materials, models scaled to nothing): refuse it here, not on the console
+ if $platform_has_localeconv &&

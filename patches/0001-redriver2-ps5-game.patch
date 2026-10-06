@@ -109,7 +109,7 @@ index 8a9a9fd..243fe6f 100644
  	{
  		if (gTimeOfDay < TIME_NIGHT)
 diff --git a/src_rebuild/Game/C/cell.c b/src_rebuild/Game/C/cell.c
-index 3a7aff1..8ba0f9a 100644
+index 3a7aff1..56a041b 100644
 --- a/src_rebuild/Game/C/cell.c
 +++ b/src_rebuild/Game/C/cell.c
 @@ -3,9 +3,17 @@
@@ -131,7 +131,7 @@ index 3a7aff1..8ba0f9a 100644
  
  u_char cell_object_computed_values[2048];
  
-@@ -17,6 +25,352 @@ void ClearCopUsage(void)
+@@ -17,6 +25,428 @@ void ClearCopUsage(void)
  	ClearMem((char *)cell_object_computed_values, sizeof_cell_object_computed_values);
  }
  
@@ -481,10 +481,86 @@ index 3a7aff1..8ba0f9a 100644
 +}
 +#endif // __PROSPERO__
 +
++#ifdef __PROSPERO__
++// ---- far-field mesh bake: visits every object of one region (any region of the loaded area), whether or not it is
++// in the barrel or the far cache, through a scratch slot ----
++typedef void (*FarObjCb)(PACKED_CELL_OBJECT* ppco, XZPAIR* nearCell, int cellx, int cellz);
++
++int FarMesh_RegionOk(int region)
++{
++	// any region of the level: the far field has the models and pages of every area
++	return region >= 0 && region < num_regions && spoolinfo_offsets[region] != 0xffff && g_CurrentLevelSpoolData != NULL;
++}
++
++int FarMesh_ForEachObject(int region, FarObjCb cb)
++{
++	static FarSlot scratch;
++	static int scratchReady = 0;
++
++	if (!FarMesh_RegionOk(region))
++		return 0;
++
++	if (!scratchReady)
++	{
++		int cellBytes = 0, objBytes = 0;
++		for (int r = 0; r < num_regions; r++)
++		{
++			if (spoolinfo_offsets[r] == 0xffff)
++				continue;
++			Spool* sp = (Spool*)(RegionSpoolInfo + spoolinfo_offsets[r]);
++			if (sp->cell_data_size[0] * 2048 > cellBytes) cellBytes = sp->cell_data_size[0] * 2048;
++			if (sp->cell_data_size[2] * 2048 > objBytes) objBytes = sp->cell_data_size[2] * 2048;
++		}
++		scratch.cells = (CELL_DATA*)calloc(1, cellBytes + 64);
++		scratch.objs = (PACKED_CELL_OBJECT*)calloc(1, objBytes + 64);
++		g_farDummy.value = 0xffff;
++		g_farDummy.pos.vy = 1;
++		scratchReady = 1;
++	}
++
++	if (!FarLoad(&scratch, region))
++		return 0;
++
++	const int rx = region % regions_across, rz = region / regions_across;
++	for (int cz = 0; cz < MAP_REGION_SIZE; cz++)
++	{
++		for (int cx = 0; cx < MAP_REGION_SIZE; cx++)
++		{
++			u_short ptr = scratch.ptrs[cz * MAP_REGION_SIZE + cx];
++			if (ptr == 0xffff)
++				continue;
++
++			CELL_DATA* cell = &scratch.cells[ptr];
++			if (cell->num & 0x4000)
++				continue;
++
++			const int cellx = rx * MAP_REGION_SIZE + cx, cellz = rz * MAP_REGION_SIZE + cz;
++			XZPAIR nearCell;
++			nearCell.x = (cellx - (cells_across / 2)) * MAP_CELL_SIZE;
++			nearCell.z = (cellz - (cells_down / 2)) * MAP_CELL_SIZE;
++
++			for (;;)
++			{
++				PACKED_CELL_OBJECT* ppco = FarObj(&scratch, cell->num & 16383);
++				if (!(ppco->value == 0xffff && (ppco->pos.vy & 1)))
++					cb(ppco, &nearCell, cellx, cellz);
++
++				if (cell->num & 0x8000)
++					break;
++				cell++;
++				if (cell->num & 0x4000)
++					break;
++			}
++		}
++	}
++	return 1;
++}
++#endif // __PROSPERO__ far-field mesh bake
++
  // [D] [T]
  PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci, int use_computed, int level)
  {
-@@ -35,12 +389,20 @@ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci,
+@@ -35,12 +465,20 @@ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci,
  	if (NumPlayers == 2)
  #endif // else do this check always
  	{
@@ -505,7 +581,7 @@ index 3a7aff1..8ba0f9a 100644
  	}
  
  	cbr = (cellz % MAP_REGION_SIZE) * MAP_REGION_SIZE + index * (MAP_REGION_SIZE*MAP_REGION_SIZE) + (cellx % MAP_REGION_SIZE);
-@@ -117,6 +479,10 @@ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci,
+@@ -117,6 +555,10 @@ PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci,
  // [D] [T]
  PACKED_CELL_OBJECT* GetNextPackedCop(CELL_ITERATOR* pci)
  {
@@ -516,7 +592,7 @@ index 3a7aff1..8ba0f9a 100644
  	ushort num;
  	u_int value;
  	PACKED_CELL_OBJECT* ppco;
-@@ -167,7 +533,7 @@ CELL_OBJECT* UnpackCellObject(PACKED_CELL_OBJECT* ppco, XZPAIR* near)
+@@ -167,7 +609,7 @@ CELL_OBJECT* UnpackCellObject(PACKED_CELL_OBJECT* ppco, XZPAIR* near)
  		return NULL;
  
  	pco = &cell_object_buffer[newIndex = cell_object_index];
@@ -556,10 +632,176 @@ index e2a0da0..7f95456 100644
  		if (tryToPark)
  		{
 diff --git a/src_rebuild/Game/C/debris.c b/src_rebuild/Game/C/debris.c
-index d940cfd..cb63782 100644
+index d940cfd..5b0c162 100644
 --- a/src_rebuild/Game/C/debris.c
 +++ b/src_rebuild/Game/C/debris.c
-@@ -2421,6 +2421,12 @@ void ShowGroundLight(VECTOR *v1, CVECTOR *col, short size)
+@@ -406,9 +406,18 @@ MATRIX leaf_mat;
+ 
+ #define LAMP_STREAK_ID(x,y) (((x) & 0xffff) | (((y) & 0xffff) << 16))
+ 
++#ifdef __PROSPERO__
++int gLights2D = 0;	// the original flat light pools on the road and star flares of the car lights (the real lights replace them)
++#else
++int gLights2D = 1;
++#endif
++
+ // [D] [T]
+ void PlacePoolForCar(CAR_DATA *cp, CVECTOR *col, int front, int in_car)
+ {
++	if (!gLights2D)
++		return;
++
+ 	SVECTOR s[12];
+ 	SVECTOR s1[12];
+ 	VECTOR pos;
+@@ -1542,10 +1551,20 @@ void AddSmallStreetLight(CELL_OBJECT *cop, int x, int y, int z, int type)
+ 	if (LightIndex > -1)
+ 		col.cd = 0x60;
+ 	
+-	ShowLight(&v3, &col, halo_size, &light_texture);
++#ifdef __PROSPERO__
++	{
++		const float lp[3] = { (float)v3.vx, (float)v3.vy, (float)v3.vz };
++		const float lc[3] = { (float)col1.r, (float)col1.g, (float)col1.b };
++		PS5_LightAdd(lp, lc, (float)(size * 280 >> 4), NULL, 0.0f, 0);
++	}
++#endif
++
++	if (gLights2D)
++		ShowLight(&v3, &col, halo_size, &light_texture);
+ 	ShowLight1(&v3, &col1, size, &light_texture);
+ 
+-	DisplayLightReflections(&v2, &col1, halo_size * 2, &lightref_texture);
++	if (gLights2D)
++		DisplayLightReflections(&v2, &col1, halo_size * 2, &lightref_texture);
+ 
+ #ifdef DYNAMIC_LIGHTING
+ 	AddDlight(&v3, &col, size * 280 >> 4);
+@@ -1666,6 +1685,14 @@ void AddLightEffect(CELL_OBJECT *cop, int x, int y, int z, int type, int colour)
+ 	LightSortCorrect = -10;
+ 	col.cd = 0;
+ 
++#ifdef __PROSPERO__
++	{
++		const float lp[3] = { (float)v1.vx, (float)v1.vy, (float)v1.vz };
++		const float lc[3] = { (float)col.r * 3.0f, (float)col.g * 3.0f, (float)col.b * 3.0f };
++		PS5_LightAdd(lp, lc, (float)(size * 180 >> 4), NULL, 0.0f, 0);
++	}
++#endif
++
+ 	Apply_Inv_CameraMatrix(&v1);
+ 
+ 	gte_SetRotMatrix(&identity);
+@@ -1677,7 +1704,8 @@ void AddLightEffect(CELL_OBJECT *cop, int x, int y, int z, int type, int colour)
+ 	AddDlight(&v1, &col, size * 180 >> 4);
+ #endif // DYNAMIC_LIGHTING
+ 
+-	DisplayLightReflections(&v2, &col, (size << 0xd) >> 0x10, &lightref_texture);
++	if (gLights2D)
++		DisplayLightReflections(&v2, &col, (size << 0xd) >> 0x10, &lightref_texture);
+ }
+ 
+ // [D] [T]
+@@ -1925,7 +1953,7 @@ void AddTrafficLight(CELL_OBJECT *cop, int x, int y, int z, int flag, int yang)
+ 	v2.vy = v1.vy;
+ 	v2.vy = -camera_position.vy - MapHeight((VECTOR*)&cop->pos);
+ 
+-	if (gNight)
++	if (gNight && gLights2D)
+ 		ShowGroundLight(&v2, &c, 300);
+ 	
+ 	if (AbsY < 1000)
+@@ -1958,7 +1986,8 @@ void AddTrafficLight(CELL_OBJECT *cop, int x, int y, int z, int flag, int yang)
+ 			if (gNight)
+ 				ShowFlare(&v1, &a, 150, lDiffAnglesX + lDiffAnglesY + v1.vx + v1.vz >> 3 & 0x1ffe);
+ 
+-			DisplayLightReflections(&v2, &a, 50, &lightref_texture);
++			if (gLights2D)
++				DisplayLightReflections(&v2, &a, 50, &lightref_texture);
+ 		}
+ 
+ 		
+@@ -2003,6 +2032,47 @@ void ShowCarlight(SVECTOR *v1, CAR_DATA *cp, CVECTOR *col, short size, short fla
+ 	VECTOR v1l;
+ 	CVECTOR flareCol;
+ 
++#ifdef __PROSPERO__
++	if (flag != 0xFF)
++	{
++		// the light as a real one: a spot along the heading for the headlights (size 18), a small point light for the rest
++		// (tail, brake, reverse lights and the indicators), also when the halo fades out
++		VECTOR lightPos, ahead;
++		SVECTOR vf = *v1;
++		vf.vz += (v1->vz >= 0) ? 1000 : -1000;
++
++		lightPos.vx = ahead.vx = cp->hd.where.t[0] - camera_position.vx;
++		lightPos.vz = ahead.vz = cp->hd.where.t[2] - camera_position.vz;
++		lightPos.vy = ahead.vy = -camera_position.vy - cp->hd.where.t[1];
++
++		InitFXPos(&lightPos, v1, cp);
++
++		const float lp[3] = { (float)lightPos.vx, (float)lightPos.vy, (float)lightPos.vz };
++
++		if ((flag & 1) && size == 18)
++		{
++			InitFXPos(&ahead, &vf, cp);
++
++			float dir[3] = { (float)(ahead.vx - lightPos.vx), (float)(ahead.vy - lightPos.vy), (float)(ahead.vz - lightPos.vz) };
++			const float dl = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
++			if (dl > 1.0f)
++			{
++				dir[0] /= dl; dir[1] /= dl; dir[2] /= dl;
++				dir[1] += 0.12f;	// aim slightly down at the road
++				const float dl2 = sqrtf(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
++				dir[0] /= dl2; dir[1] /= dl2; dir[2] /= dl2;
++				const float lc[3] = { (float)col->r * 1.6f, (float)col->g * 1.6f, (float)col->b * 1.6f };
++				PS5_LightAdd(lp, lc, 9000.0f, dir, 0.80f, (int)(cp - car_data) + 1);
++			}
++		}
++		else
++		{
++			const float lc[3] = { (float)col->r * 1.3f, (float)col->g * 1.3f, (float)col->b * 1.3f };
++			PS5_LightAdd(lp, lc, 900.0f, NULL, 0.0f, 0);
++		}
++	}
++#endif
++
+ 	CarLightFade = 255;
+ 
+ 	if (flag != 0xFF)
+@@ -2031,24 +2101,28 @@ void ShowCarlight(SVECTOR *v1, CAR_DATA *cp, CVECTOR *col, short size, short fla
+ 
+ 	InitFXPos(&v1l, v1, cp);
+ 
++
+ 	if (wetness > 9) 
+ 	{
+ 		v1t.vx = v1l.vx;
+ 		v1t.vz = v1l.vz;
+ 		v1t.vy = -camera_position.vy - MapHeight((VECTOR *)cp->hd.where.t);
+ 
+-		DisplayLightReflections(&v1t, &flareCol, flare_size / 2, &lightref_texture);
++		if (gLights2D)
++			DisplayLightReflections(&v1t, &flareCol, flare_size / 2, &lightref_texture);
+ 	}
+ 
+ 	col->cd = flag;
+ 
+-	ShowLight(&v1l, &flareCol, size, texture);
++	if (gLights2D)
++		ShowLight(&v1l, &flareCol, size, texture);
+ 
+ 	flareCol.r /= 2;
+ 	flareCol.g /= 2;
+ 	flareCol.b /= 2;
+ 
+-	ShowFlare(&v1l, &flareCol, flare_size, (v1->vx + v1->vz) / 4 + (cp->hd.direction - camera_angle.vy) * 2);
++	if (gLights2D)
++		ShowFlare(&v1l, &flareCol, flare_size, (v1->vx + v1->vz) / 4 + (cp->hd.direction - camera_angle.vy) * 2);
+ }
+ 
+ // [D] [T]
+@@ -2421,6 +2495,12 @@ void ShowGroundLight(VECTOR *v1, CVECTOR *col, short size)
  // [D] [T]
  void RoundShadow(VECTOR *v1, CVECTOR *col, short size)
  {
@@ -586,7 +828,7 @@ index 0a32a04..16cf033 100644
  		if (plane->surface - 16U < 16)
  			plane = EventSurface(pos, plane);
 diff --git a/src_rebuild/Game/C/draw.c b/src_rebuild/Game/C/draw.c
-index c9497d8..283ca45 100644
+index c9497d8..27d641b 100644
 --- a/src_rebuild/Game/C/draw.c
 +++ b/src_rebuild/Game/C/draw.c
 @@ -1,4 +1,5 @@
@@ -804,16 +1046,26 @@ index c9497d8..283ca45 100644
  void DrawMapPSX(int* comp_val)
  {
  	CELL_OBJECT* cop;
-@@ -1302,6 +1425,16 @@ void DrawMapPSX(int* comp_val)
+@@ -1302,6 +1425,26 @@ void DrawMapPSX(int* comp_val)
  
  	SetupDrawMapPSX();
  
 +#ifdef __PROSPERO__
 +	FarRegions_Update(current_cell_x, current_cell_z);
 +	{
++		extern void FarMesh_Update(int camCellX, int camCellZ);
++		FarMesh_Update(current_cell_x, current_cell_z);
++	}
++	{
 +		extern SVECTOR sun_position[4], moon_position[4];
 +		extern void GR_PS5_SetShadowParams(int sx, int sy, int sz, const short* m, int cx, int cy, int cz);
 +		const SVECTOR* sunv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
++		{
++			extern int wetness;
++			extern void GR_PS5_SetWet(float w);
++			float wet = wetness / 5000.0f;
++			GR_PS5_SetWet(wet > 1.0f ? 1.0f : (wet < 0.0f ? 0.0f : wet));
++		}
 +		GR_PS5_SetShadowParams(sunv->vx, sunv->vy, sunv->vz, &inv_camera_matrix.m[0][0], camera_position.vx, camera_position.vy, camera_position.vz);
 +	}
 +#endif
@@ -821,7 +1073,7 @@ index c9497d8..283ca45 100644
  	// clean cell cache
  	ClearCopUsage();
  
-@@ -1330,8 +1463,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1330,8 +1473,12 @@ void DrawMapPSX(int* comp_val)
  		drawData.farClipLimit = farClip2Player;
  	else
  		drawData.farClipLimit = 60000;
@@ -834,7 +1086,7 @@ index c9497d8..283ca45 100644
  #endif
  
  	drawData.tiles_found = 0;
-@@ -1342,6 +1479,16 @@ void DrawMapPSX(int* comp_val)
+@@ -1342,6 +1489,16 @@ void DrawMapPSX(int* comp_val)
  	
  	drawData.cellzpos = current_cell_z;
  	drawData.cellxpos = current_cell_x;
@@ -851,7 +1103,7 @@ index c9497d8..283ca45 100644
  
  	PVS_ptr = CurrentPVS + 220;
  
-@@ -1356,12 +1503,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1356,12 +1513,25 @@ void DrawMapPSX(int* comp_val)
  	else
  		distScale = goFaster & 31;
  
@@ -879,7 +1131,7 @@ index c9497d8..283ca45 100644
  		{
  			// clamped vis values
  			int vis_h = MIN(MAX(hloop, -9), PVS_CELL_COUNT / 2);
-@@ -1369,26 +1529,51 @@ void DrawMapPSX(int* comp_val)
+@@ -1369,26 +1539,51 @@ void DrawMapPSX(int* comp_val)
  
  			cellx = drawData.cellxpos + hloop;
  			cellz = drawData.cellzpos + vloop;
@@ -932,7 +1184,7 @@ index c9497d8..283ca45 100644
  
  							if ((model->flags2 & MODEL_FLAG_ANIMOBJ) && drawData.anim_objs_found < MAX_DRAWN_ANIMATING)
  							{
-@@ -1452,7 +1637,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1452,7 +1647,12 @@ void DrawMapPSX(int* comp_val)
  								}
  
  								if (drawData.tiles_found < MAX_DRAWN_TILES)
@@ -945,7 +1197,7 @@ index c9497d8..283ca45 100644
  							}
  							else
  							{
-@@ -1523,6 +1713,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1523,6 +1723,25 @@ void DrawMapPSX(int* comp_val)
  	PrintString(tempBuf, 10, 120);
  #endif
  
@@ -972,10 +1224,10 @@ index c9497d8..283ca45 100644
  
  	if (drawData.anim_objs_found)
 diff --git a/src_rebuild/Game/C/draw.h b/src_rebuild/Game/C/draw.h
-index 862974f..ca88f28 100644
+index 862974f..4bd5487 100644
 --- a/src_rebuild/Game/C/draw.h
 +++ b/src_rebuild/Game/C/draw.h
-@@ -64,10 +64,10 @@ extern MATRIX2 CompoundMatrix[64];
+@@ -64,10 +64,18 @@ extern MATRIX2 CompoundMatrix[64];
  
  #else
  
@@ -983,10 +1235,18 @@ index 862974f..ca88f28 100644
 -#define MAX_DRAWN_TILES			750
 -#define MAX_DRAWN_ANIMATING		48
 -#define MAX_DRAWN_SPRITES		128
++#ifdef __PROSPERO__
++// NOTE: raising these (tiles > 2048) makes the ground vanish and garbage appear: the PSX pipeline does not reach past ~30 cells
 +#define MAX_DRAWN_BUILDINGS		1024
 +#define MAX_DRAWN_TILES			2048
 +#define MAX_DRAWN_ANIMATING		96
 +#define MAX_DRAWN_SPRITES		256
++#else
++#define MAX_DRAWN_BUILDINGS		1024
++#define MAX_DRAWN_TILES			2048
++#define MAX_DRAWN_ANIMATING		96
++#define MAX_DRAWN_SPRITES		256
++#endif
  
  #define DRAW_LOD_DIST_HIGH		7000
  #define DRAW_LOD_DIST_LOW		10000
@@ -1090,10 +1350,38 @@ index d62f17e..e60e722 100644
  
  	homepath = getenv(HOME_ENV); // "USERPROFILE"
 diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
-index 91d8bb8..a22b166 100644
+index 91d8bb8..64a7f5c 100644
 --- a/src_rebuild/Game/C/main.c
 +++ b/src_rebuild/Game/C/main.c
-@@ -1826,7 +1826,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1588,12 +1588,27 @@ void State_GameLoop(void* param)
+ 	}
+ #else
+ 	cnt = FastForward ? 7 : 1;
++#ifdef __PROSPERO__
++	extern double PsyX_NowMs();
++	extern void GR_PS5_PerfCpu(int which, double ms);
++	const double perfT0 = PsyX_NowMs();
++#endif
+ 	while (--cnt >= 0)
+ 		StepGame();
++#ifdef __PROSPERO__
++	const double perfT1 = PsyX_NowMs();
++	GR_PS5_PerfCpu(0, perfT1 - perfT0);
++#endif
+ #endif
+ 
+ 	_CutRec_Draw();
++#ifdef __PROSPERO__
++	const double perfT2 = PsyX_NowMs();
++#endif
+ 	DrawGame();
++#ifdef __PROSPERO__
++	GR_PS5_PerfCpu(1, PsyX_NowMs() - perfT2);
++#endif
+ 	
+ 	if (game_over)
+ 		SetState(STATE_GAMECOMPLETE);
+@@ -1826,7 +1841,6 @@ int redriver2_main(int argc, char** argv)
  	SetVideoMode(video_mode);
  
  	CdInit();
@@ -1101,7 +1389,7 @@ index 91d8bb8..a22b166 100644
  
  	SpuInit();
  	InitGeom();
-@@ -1837,7 +1836,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1837,7 +1851,6 @@ int redriver2_main(int argc, char** argv)
  	InitControllers();
  	Init_FileSystem();
  	InitSound();
@@ -1109,7 +1397,7 @@ index 91d8bb8..a22b166 100644
  	// [A] REDRIVER 2 version auto-detection
  	// this is the only difference between the files on CD
  #ifdef DEMO_VERSION
-@@ -1860,6 +1858,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1860,6 +1873,7 @@ int redriver2_main(int argc, char** argv)
  	{
  		char str[320];
  		sprintf(str, "Cannot initialize REDRIVER2\n\nGame files not found by folder '%s'\n", gDataFolder);
@@ -1117,7 +1405,7 @@ index 91d8bb8..a22b166 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", str, NULL);
  		return -1;
  	}
-@@ -1867,6 +1866,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1867,6 +1881,7 @@ int redriver2_main(int argc, char** argv)
  	// init language
  	if (!InitStringMng())
  	{
@@ -1125,16 +1413,53 @@ index 91d8bb8..a22b166 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", "Unable to load language files!\n\nSee console for details", NULL);
  		return -1;
  	}
-@@ -2221,6 +2221,9 @@ void RenderGame2(int view)
+@@ -2221,6 +2236,10 @@ void RenderGame2(int view)
  	int notInDreaAndStevesEvilLair;
  
  	CurrentPlayerView = view;
 +#ifdef __PROSPERO__
 +	PGXP_ShadowCasterReset();
++	PS5_LightsReset();
 +#endif
  	InitCamera(&player[view]);
  
  #ifndef PSX
+@@ -2371,6 +2390,35 @@ void RenderGame2(int view)
+ 	gNumDlights = 0;
+ #endif
+ 
++#ifdef __PROSPERO__
++	{
++		// frame rate counter (pause menu: FPS ON)
++		extern int gShowFPS;
++		extern double PsyX_NowMs();
++		static double lastMs = 0.0;
++		static int frames = 0;
++		static char fpsText[48] = "";
++
++		frames++;
++		const double nowMs = PsyX_NowMs();
++		if (nowMs - lastMs >= 500.0)
++		{
++			extern void GR_PS5_PerfInfo(float* cpuMs, float* gpuMs);
++			float cpuMs, gpuMs;
++			GR_PS5_PerfInfo(&cpuMs, &gpuMs);
++			sprintf(fpsText, "%.1f FPS  CPU %.0f  GPU %.0f", frames * 1000.0 / (nowMs - lastMs), cpuMs, gpuMs);
++			frames = 0;
++			lastMs = nowMs;
++		}
++
++		if (gShowFPS && fpsText[0])
++		{
++			SetTextColour(128, 255, 128);
++			PrintString(fpsText, 8, 222);
++		}
++	}
++#endif
++
+ 	extern void DrawDebugOverlays();
+ 
+ 	DrawDebugOverlays();
 diff --git a/src_rebuild/Game/C/map.c b/src_rebuild/Game/C/map.c
 index b79a956..799b2f3 100644
 --- a/src_rebuild/Game/C/map.c
@@ -1227,6 +1552,191 @@ index c1842b5..c8c58af 100644
  	POLY_FT4* curPoly;
  	DR_ENV* dr_env;
  	SVECTOR vert[4];
+diff --git a/src_rebuild/Game/C/pause.c b/src_rebuild/Game/C/pause.c
+index db5f7f6..f7a5201 100644
+--- a/src_rebuild/Game/C/pause.c
++++ b/src_rebuild/Game/C/pause.c
+@@ -72,6 +72,46 @@ static MENU_HEADER* ActiveMenu;
+ static int ActiveMenuItem;
+ static int VisibleMenu;
+ 
++#ifdef __PROSPERO__
++// "HD MOD": the PS5 look (HD textures, real lights, shadows, fog) on or off, to compare with the original
++extern int gShadows2D, gLights2D;
++extern void GR_PS5_SetModOn(int on);
++int gHDMod = 1;
++static char HDModText[16] = "HD MOD ON";
++int gShowFPS = 0;
++static char FPSText[16] = "FPS OFF";
++static int hdModSaved = 0, hdModShadows2D = 0, hdModLights2D = 0;
++
++static void UpdateFxTexts(void);
++void ApplyHDMod(void)
++{
++	UpdateFxTexts();
++	if (!hdModSaved)
++	{
++		hdModSaved = 1;
++		hdModShadows2D = gShadows2D;
++		hdModLights2D = gLights2D;
++	}
++	GR_PS5_SetModOn(gHDMod);
++	gShadows2D = gHDMod ? hdModShadows2D : 1;	// the original flat shadows and light flares come back
++	gLights2D = gHDMod ? hdModLights2D : 1;
++	sprintf(HDModText, gHDMod ? "HD MOD ON" : "HD MOD OFF");
++	sprintf(FPSText, gShowFPS ? "FPS ON" : "FPS OFF");
++}
++
++void ToggleHDMod(int direction)
++{
++	gHDMod ^= 1;
++	ApplyHDMod();
++}
++
++void ToggleFPS(int direction)
++{
++	gShowFPS ^= 1;
++	sprintf(FPSText, gShowFPS ? "FPS ON" : "FPS OFF");
++}
++#endif
++
+ static char SfxVolumeText[8];
+ static char MusicVolumeText[8];
+ 
+@@ -278,6 +318,109 @@ MENU_HEADER DebugOptionsHeader =
+ { "Debug Options", { 0, 0, 0, 0 }, 0u, DebugOptionsItems };
+ #endif
+ 
++
++#ifdef __PROSPERO__
++// Time of day and weather from the pause menu (the debug menu that has them is not built): to see the night, the rain and the
++// lights without having to reach such a mission. Day and night restart the mission so that the matching city is loaded.
++extern void LoadSky(void);
++
++static void Ps5TimeDay(int direction)
++{
++	wantedTimeOfDay = TIME_DAY;
++	gTimeOfDay = TIME_DAY;
++	gWantNight = 0;
++	LoadSky();
++}
++
++static void Ps5TimeNight(int direction)
++{
++	wantedTimeOfDay = TIME_NIGHT;
++	gTimeOfDay = TIME_NIGHT;
++	gWantNight = 1;
++	LoadSky();
++}
++
++static void Ps5TimeDusk(int direction)
++{
++	wantedTimeOfDay = TIME_DUSK;
++	gTimeOfDay = TIME_DUSK;
++	gWantNight = 0;
++	LoadSky();
++}
++
++static void Ps5TimeDawn(int direction)
++{
++	wantedTimeOfDay = TIME_DAWN;
++	gTimeOfDay = TIME_DAWN;
++	gWantNight = 0;
++	LoadSky();
++}
++
++static void Ps5Rain(int direction)
++{
++	gWeather ^= 1;
++	wantedWeather = gWeather;
++	wetness = (gWeather == WEATHER_RAIN) ? 7000 : 0;
++	LoadSky();
++}
++
++MENU_ITEM Ps5WeatherItems[] =
++{
++	{ "Day",	PAUSE_TYPE_FUNC, 2, Ps5TimeDay,		MENU_QUIT_RESTART,	NULL },
++	{ "Night",	PAUSE_TYPE_FUNC, 2, Ps5TimeNight,	MENU_QUIT_RESTART,	NULL },
++	{ "Dusk",	PAUSE_TYPE_FUNC, 2, Ps5TimeDusk,	MENU_QUIT_NONE,		NULL },
++	{ "Dawn",	PAUSE_TYPE_FUNC, 2, Ps5TimeDawn,	MENU_QUIT_NONE,		NULL },
++	{ "Rain",	PAUSE_TYPE_FUNC, 2, Ps5Rain,		MENU_QUIT_NONE,		NULL },
++	{ NULL, PAUSE_TYPE_ENDITEMS, 0u, NULL, MENU_QUIT_NONE, NULL }
++};
++
++MENU_HEADER Ps5WeatherHeader =
++{ "Time and Weather", { 0, 0, 0, 0 }, 0u, Ps5WeatherItems };
++
++// run-time switches of each PS5 effect, to see what each one costs (the frame counter shows the CPU and GPU time)
++extern void GR_PS5_SetFeature(int id, int on);
++extern int GR_PS5_GetFeature(int id);
++static char FxText[8][20];
++static const char* const FxNames[8] = { "SHADOWS", "LIGHTS", "HD TEXTURES", "FOG", "BLOOM", "SSAO", "WET ROADS", "Z PREPASS" };
++
++static void UpdateFxTexts(void)
++{
++	for (int i = 0; i < 8; i++)
++		sprintf(FxText[i], "%s %s", FxNames[i], GR_PS5_GetFeature(i) ? "ON" : "OFF");
++}
++
++static void ToggleFx(int id)
++{
++	GR_PS5_SetFeature(id, !GR_PS5_GetFeature(id));
++	UpdateFxTexts();
++}
++
++static void ToggleFx0(int d) { ToggleFx(0); }
++static void ToggleFx1(int d) { ToggleFx(1); }
++static void ToggleFx2(int d) { ToggleFx(2); }
++static void ToggleFx3(int d) { ToggleFx(3); }
++static void ToggleFx4(int d) { ToggleFx(4); }
++static void ToggleFx5(int d) { ToggleFx(5); }
++static void ToggleFx6(int d) { ToggleFx(6); }
++static void ToggleFx7(int d) { ToggleFx(7); }
++
++MENU_ITEM Ps5EffectsItems[] =
++{
++	{ FxText[0], PAUSE_TYPE_FUNC, 2, ToggleFx0, MENU_QUIT_NONE, NULL },
++	{ FxText[1], PAUSE_TYPE_FUNC, 2, ToggleFx1, MENU_QUIT_NONE, NULL },
++	{ FxText[2], PAUSE_TYPE_FUNC, 2, ToggleFx2, MENU_QUIT_NONE, NULL },
++	{ FxText[3], PAUSE_TYPE_FUNC, 2, ToggleFx3, MENU_QUIT_NONE, NULL },
++	{ FxText[4], PAUSE_TYPE_FUNC, 2, ToggleFx4, MENU_QUIT_NONE, NULL },
++	{ FxText[5], PAUSE_TYPE_FUNC, 2, ToggleFx5, MENU_QUIT_NONE, NULL },
++	{ FxText[6], PAUSE_TYPE_FUNC, 2, ToggleFx6, MENU_QUIT_NONE, NULL },
++	{ FxText[7], PAUSE_TYPE_FUNC, 2, ToggleFx7, MENU_QUIT_NONE, NULL },
++	{ NULL, PAUSE_TYPE_ENDITEMS, 0u, NULL, MENU_QUIT_NONE, NULL }
++};
++
++MENU_HEADER Ps5EffectsHeader =
++{ "PS5 Effects", { 0, 0, 0, 0 }, 0u, Ps5EffectsItems };
++#endif
++
+ MENU_ITEM YesNoRestartItems[] =
+ {
+ 	{ G_LTXT_ID(GTXT_NO), 1u, 2u, NULL, MENU_QUIT_BACKMENU, NULL },
+@@ -305,6 +448,12 @@ MENU_ITEM MainPauseItems[] =
+ 	{ G_LTXT_ID(GTXT_Restart), PAUSE_TYPE_SUBMENU, 2u, NULL, MENU_QUIT_NONE, &YesNoRestartHeader },
+ 	{ G_LTXT_ID(GTXT_SfxVolume), PAUSE_TYPE_SFXVOLUME | PAUSE_TYPE_DIRFUNC, 2u, (pauseFunc)&SfxVolume, MENU_QUIT_NONE, NULL },
+ 	{ G_LTXT_ID(GTXT_MusicVolume), PAUSE_TYPE_MUSICVOLUME | PAUSE_TYPE_DIRFUNC, 2u, (pauseFunc)&MusicVolume, MENU_QUIT_NONE, NULL },
++#ifdef __PROSPERO__
++	{ HDModText, PAUSE_TYPE_FUNC, 2u, (pauseFunc)&ToggleHDMod, MENU_QUIT_NONE, NULL },
++	{ FPSText, PAUSE_TYPE_FUNC, 2u, (pauseFunc)&ToggleFPS, MENU_QUIT_NONE, NULL },
++	{ "PS5 Effects", PAUSE_TYPE_SUBMENU, 2u, NULL, MENU_QUIT_NONE, &Ps5EffectsHeader },
++	{ "Time and Weather", PAUSE_TYPE_SUBMENU, 2u, NULL, MENU_QUIT_NONE, &Ps5WeatherHeader },
++#endif
+ 	{ G_LTXT_ID(GTXT_FilmDirector), 1u, 2u, NULL, MENU_QUIT_DIRECTOR, NULL},
+ 	{ G_LTXT_ID(GTXT_QuickReplay),1u,2u,NULL,MENU_QUIT_QUICKREPLAY,NULL},
+ #if defined(_DEBUG) || defined(DEBUG_OPTIONS)
+@@ -865,6 +1014,10 @@ void InitaliseMenu(PAUSEMODE mode)
+ 	MENU_HEADER* pNewMenu;
+ 	int i;
+ 
++#ifdef __PROSPERO__
++	ApplyHDMod();
++#endif
++
+ 	for (i = 0; i < PAUSE_MENU_LEVELS; i++)
+ 	{
+ 		ActiveItem[i] = NULL;
 diff --git a/src_rebuild/Game/C/pedest.c b/src_rebuild/Game/C/pedest.c
 index b2cff4c..64a8197 100644
 --- a/src_rebuild/Game/C/pedest.c
@@ -1276,17 +1786,52 @@ index 4088abe..1c4653b 100644
  	SVECTOR points[4];
  
 diff --git a/src_rebuild/Game/C/sky.c b/src_rebuild/Game/C/sky.c
-index 1cf3a6a..b835d30 100644
+index 1cf3a6a..51723f7 100644
 --- a/src_rebuild/Game/C/sky.c
 +++ b/src_rebuild/Game/C/sky.c
-@@ -960,6 +960,13 @@ void DrawSkyDome(void)
+@@ -503,6 +503,15 @@ void DrawLensFlare(void)
+ 
+ 	source = sun_source;
+ 
++#ifdef __PROSPERO__
++	{
++		// the HD sky paints its own sun and moon: the game's sprites and flares would double them
++		extern int GR_PS5_SkyActive(void);
++		if (GR_PS5_SkyActive())
++			return;
++	}
++#endif
++
+ 	if (gWeather - 1U <= 1 || (M_BIT(gTimeOfDay) & (M_BIT(TIME_DAWN) | M_BIT(TIME_DUSK))))
+ 		return;
+ 	
+@@ -960,6 +969,32 @@ void DrawSkyDome(void)
  
  	calc_sky_brightness(&skycolor);
  
 +#ifdef __PROSPERO__
 +	{
++		// HD sky: a panorama of the city (picked by moment of the day and weather) drawn by the renderer instead of
++		// the PSX dome; it also sets the haze colour. Returns 0 when the pack is missing or switched off.
++		extern int GR_PS5_SkyFrame(const char* city, int timeOfDay, int weather, int sunX, int sunY, int sunZ, int brightR, int brightG, int brightB);
++		extern char* LevelNames[];
++		const SVECTOR* sv = (gTimeOfDay == TIME_NIGHT) ? &moon_position[GameLevel] : &sun_position[GameLevel];
++		if (GR_PS5_SkyFrame(LevelNames[GameLevel], gTimeOfDay, gWeather, sv->vx, sv->vy, sv->vz, skycolor.r, skycolor.g, skycolor.b))
++		{
++			// what follows in the frame (cars, rain, tyre tracks) relies on the transform the dome leaves in the GTE
++			skyOfs.vy = sky_y_offset[GameLevel];
++			gte_SetRotMatrix(&inv_camera_matrix);
++			gte_SetTransVector(&skyOfs);
++			return;
++		}
++	}
++	{
 +		extern void GR_PS5_SetFog(int r, int g, int b);
-+		GR_PS5_SetFog(skycolor.r, skycolor.g, skycolor.b);
++		// the sky tint stays at full brightness at night (the night sky comes from the horizon textures): use a dark blue haze
++		if (gTimeOfDay == TIME_NIGHT)
++			GR_PS5_SetFog(9, 12, 20);
++		else
++			GR_PS5_SetFog(skycolor.r, skycolor.g, skycolor.b);
 +	}
 +#endif
 +
@@ -1306,6 +1851,43 @@ index b295be6..cc4fb73 100644
  #endif
  		}
  	}
+diff --git a/src_rebuild/Game/C/spool.c b/src_rebuild/Game/C/spool.c
+index 4dce1d7..dce037c 100644
+--- a/src_rebuild/Game/C/spool.c
++++ b/src_rebuild/Game/C/spool.c
+@@ -1423,6 +1423,32 @@ void GotRegion(void)
+ extern char g_CurrentLevelFileName[64];
+ extern char* g_CurrentLevelSpoolData;
+ 
++#ifdef __PROSPERO__
++// ---- the far-field mesh reads the data of every area straight from the spool lump kept in RAM ----
++int FarMesh_NumAreas(void) { return NumAreas; }
++
++// offset: in sectors from the start of the spool lump, as the game's own requests give it
++const char* FarMesh_SpoolPtr(int offset)
++{
++	if (g_CurrentLevelSpoolData == NULL)
++		return NULL;
++	return g_CurrentLevelSpoolData + (size_t)offset * CDSECTOR_SIZE;
++}
++
++// the model block and the texture pages of one area (offsets in sectors)
++int FarMesh_AreaInfo(int area, int* modelOffset, int* modelSize, int* gfxOffset, int* numTPages, const unsigned char** tpages)
++{
++	if (area < 0 || area >= NumAreas || AreaData == NULL)
++		return 0;
++	*modelOffset = AreaData[area].model_offset;
++	*modelSize = AreaData[area].model_size;
++	*gfxOffset = AreaData[area].gfx_offset;
++	*numTPages = AreaData[area].num_tpages;
++	*tpages = AreaTPages + area * 16;
++	return 1;
++}
++#endif // __PROSPERO__
++
+ int UpdateSpoolPC(void)
+ {
+ 	if (g_CurrentLevelFileName[0] == 0)
 diff --git a/src_rebuild/Game/C/system.c b/src_rebuild/Game/C/system.c
 index 9bb086e..d8b518b 100644
 --- a/src_rebuild/Game/C/system.c
@@ -1352,6 +1934,38 @@ index f265e43..3db1b16 100644
  #else
  #	define PRIMTAB_SIZE 0x1e000
  #endif
+diff --git a/src_rebuild/Game/C/texture.c b/src_rebuild/Game/C/texture.c
+index bbab1bf..fabb492 100644
+--- a/src_rebuild/Game/C/texture.c
++++ b/src_rebuild/Game/C/texture.c
+@@ -302,6 +302,27 @@ int LoadTPageAndCluts(RECT16 *tpage, RECT16 *cluts, int tpage2send, char *tpagea
+ 	LoadImage(&temptpage, (u_long*)_other_buffer);
+ 
+ 	texture_pages[tpage2send] = GetTPage(0, 0, tpage->x, tpage->y);
++
++#ifdef __PROSPERO__
++	{
++		// HD replacement of this page: DRIVER2/HD/<city>, the folder named like the level file (night and multiplayer
++		// cities are other LEV files with other palettes)
++		extern void GR_PS5_HDPageLoaded(const char* city, int vx, int vy, int page);
++		const char* hdPrefix;
++		char hdName[32];
++
++		switch (GetCityType())
++		{
++			case CITYTYPE_NIGHT:		hdPrefix = "N";		break;
++			case CITYTYPE_MULTI_DAY:	hdPrefix = "M";		break;
++			case CITYTYPE_MULTI_NIGHT:	hdPrefix = "MN";	break;
++			default:					hdPrefix = "";		break;
++		}
++		sprintf(hdName, "%s%s", hdPrefix, LevelNames[GameLevel]);
++		GR_PS5_HDPageLoaded(hdName, tpage->x, tpage->y, tpage2send);
++	}
++#endif
++
+ 	IncrementTPageNum(tpage);
+ 
+ 	return 1;
 diff --git a/src_rebuild/Game/C/tile.c b/src_rebuild/Game/C/tile.c
 index 28a6477..041404a 100644
 --- a/src_rebuild/Game/C/tile.c
@@ -1459,7 +2073,7 @@ index 07d7f59..97d4777 100644
  
  struct OUT_CELL_FILE_HEADER
 diff --git a/src_rebuild/redriver2_psxpc.cpp b/src_rebuild/redriver2_psxpc.cpp
-index 33cadfd..90eac4a 100644
+index 33cadfd..75a453a 100644
 --- a/src_rebuild/redriver2_psxpc.cpp
 +++ b/src_rebuild/redriver2_psxpc.cpp
 @@ -470,8 +470,15 @@ void SwitchMappings(int menu)
@@ -1484,7 +2098,7 @@ index 33cadfd..90eac4a 100644
  		ini_sget(config, "render", "bilinearFiltering", "%d", &g_cfg_bilinearFiltering);
 +#ifdef __PROSPERO__
 +		{ extern int g_cfg_ps5RenderScale; ini_sget(config, "render", "ps5RenderScale", "%d", &g_cfg_ps5RenderScale); }
-+		{ extern int g_cfg_ps5Shadows, g_cfg_ps5ShadowSize, g_cfg_ps5ShadowDebug, g_cfg_ps5ShadowFlip; extern float g_cfg_ps5ShadowStrength; ini_sget(config, "render", "shadowMap", "%d", &g_cfg_ps5Shadows); { extern int gShadowCastRadius; ini_sget(config, "render", "shadowRadius", "%d", &gShadowCastRadius); } { extern int g_cfg_ps5Fog, g_cfg_ps5FogStart, g_cfg_ps5FogEnd, g_cfg_ps5FogR, g_cfg_ps5FogG, g_cfg_ps5FogB; ini_sget(config, "render", "fog", "%d", &g_cfg_ps5Fog); ini_sget(config, "render", "fogStart", "%d", &g_cfg_ps5FogStart); ini_sget(config, "render", "fogEnd", "%d", &g_cfg_ps5FogEnd); ini_sget(config, "render", "fogR", "%d", &g_cfg_ps5FogR); ini_sget(config, "render", "fogG", "%d", &g_cfg_ps5FogG); ini_sget(config, "render", "fogB", "%d", &g_cfg_ps5FogB); } { extern int g_cfg_ps5ShadowSplits; ini_sget(config, "render", "shadowSplits", "%d", &g_cfg_ps5ShadowSplits); } { extern int g_cfg_pgxpChain; ini_sget(config, "render", "pgxpChain", "%d", &g_cfg_pgxpChain); } ini_sget(config, "render", "shadowDebug", "%d", &g_cfg_ps5ShadowDebug); ini_sget(config, "render", "shadowFlip", "%d", &g_cfg_ps5ShadowFlip); ini_sget(config, "render", "shadowMapSize", "%d", &g_cfg_ps5ShadowSize); ini_sget(config, "render", "shadowStrength", "%f", &g_cfg_ps5ShadowStrength); }
++		{ extern int g_cfg_ps5Shadows, g_cfg_ps5ShadowSize, g_cfg_ps5ShadowDebug, g_cfg_ps5ShadowFlip; extern float g_cfg_ps5ShadowStrength; ini_sget(config, "render", "shadowMap", "%d", &g_cfg_ps5Shadows); { extern int g_cfg_ps5Prepass; ini_sget(config, "render", "zPrepass", "%d", &g_cfg_ps5Prepass); } { extern float g_cfg_ps5Wet, g_cfg_ps5Bloom, g_cfg_ps5SSAO; ini_sget(config, "render", "wetRoads", "%f", &g_cfg_ps5Wet); ini_sget(config, "render", "bloom", "%f", &g_cfg_ps5Bloom); ini_sget(config, "render", "ssao", "%f", &g_cfg_ps5SSAO); } { extern int g_cfg_ps5HD; ini_sget(config, "render", "hdTextures", "%d", &g_cfg_ps5HD); } { extern int g_cfg_ps5Lights; extern float g_cfg_ps5LightStrength, g_cfg_ps5LightRadius; ini_sget(config, "render", "lights", "%d", &g_cfg_ps5Lights); ini_sget(config, "render", "lightStrength", "%f", &g_cfg_ps5LightStrength); ini_sget(config, "render", "lightRadius", "%f", &g_cfg_ps5LightRadius); } { extern int gShadowCastRadius; ini_sget(config, "render", "shadowRadius", "%d", &gShadowCastRadius); } { extern int g_cfg_ps5Fog, g_cfg_ps5FogStart, g_cfg_ps5FogEnd, g_cfg_ps5FogR, g_cfg_ps5FogG, g_cfg_ps5FogB; ini_sget(config, "render", "fog", "%d", &g_cfg_ps5Fog); ini_sget(config, "render", "fogStart", "%d", &g_cfg_ps5FogStart); ini_sget(config, "render", "fogEnd", "%d", &g_cfg_ps5FogEnd); ini_sget(config, "render", "fogR", "%d", &g_cfg_ps5FogR); ini_sget(config, "render", "fogG", "%d", &g_cfg_ps5FogG); ini_sget(config, "render", "fogB", "%d", &g_cfg_ps5FogB); } { extern int g_cfg_ps5ShadowSplits; ini_sget(config, "render", "shadowSplits", "%d", &g_cfg_ps5ShadowSplits); } { extern int g_cfg_pgxpChain; ini_sget(config, "render", "pgxpChain", "%d", &g_cfg_pgxpChain); } ini_sget(config, "render", "shadowDebug", "%d", &g_cfg_ps5ShadowDebug); ini_sget(config, "render", "shadowFlip", "%d", &g_cfg_ps5ShadowFlip); ini_sget(config, "render", "shadowMapSize", "%d", &g_cfg_ps5ShadowSize); ini_sget(config, "render", "shadowStrength", "%f", &g_cfg_ps5ShadowStrength); }
 +#endif
  
  		// configure host game
@@ -1492,7 +2106,7 @@ index 33cadfd..90eac4a 100644
 +		{ extern int gExtendedView; ini_sget(config, "game", "extendedView", "%d", &gExtendedView); }
 +#ifdef __PROSPERO__
 +		{ extern int gFarRegionRadius; ini_sget(config, "game", "farRegions", "%d", &gFarRegionRadius); }
-+		{ extern int gShadows2D; ini_sget(config, "game", "shadows2d", "%d", &gShadows2D); }
++		{ extern int gLights2D; ini_sget(config, "game", "lights2d", "%d", &gLights2D); } { extern int gShadows2D; ini_sget(config, "game", "shadows2d", "%d", &gShadows2D); }
 +#endif
  #ifdef DYNAMIC_LIGHTING
  		ini_sget(config, "game", "dynamicLights", "%d", &gEnableDlights);
@@ -1747,3 +2361,491 @@ index e66519f..6f55a62 100644
  }
  
  // FMV main function
+diff --git a/src_rebuild/Game/C/farmesh.c b/src_rebuild/Game/C/farmesh.c
+new file mode 100644
+index 0000000..c1bd87b
+--- /dev/null
++++ b/src_rebuild/Game/C/farmesh.c
+@@ -0,0 +1,482 @@
++// The far field of the PS5 mod: the map beyond the game's own drawing range, as static meshes.
++//
++// The PSX pipeline cannot reach far: the GTE saturates depth at 16 bits (~32 cells) and the game walks every cell and
++// transforms every polygon on the CPU each frame. Here each 8x8 cells of the loaded area (a "chunk") is baked once into
++// world-space triangles (buildings and ground, the same textured quads the game plots) and the renderer draws them every
++// frame from the camera, on the GPU. Only regions of the loaded area are baked: models and textures are per area.
++#ifdef __PROSPERO__
++#include "driver2.h"
++#include "draw.h"
++#include "main.h"
++#include "map.h"
++#include "models.h"
++#include "system.h"
++#include "camera.h"
++#include "mission.h"
++#include "cell.h"
++#include "texture.h"
++#include <stdlib.h>
++#include <string.h>
++#include <math.h>
++
++// the renderer's vertex (20 bytes): position relative to the chunk's origin, the tpage/clut as the game gives them,
++// uv, a colour selector (0..31 the lit-wall table, 32 the combo colour, 33 the ground colour), flags (1 water or grass
++// ground, 2 ground)
++typedef struct
++{
++	float x, y, z;
++	unsigned short page, clut;
++	unsigned char u, v, col, flags;
++} FarVertex;
++
++extern void GR_PS5_FarChunkSet(int key, int fmt, int ox, int oy, int oz, const FarVertex* v, int count);
++extern void GR_PS5_FarClear(void);
++extern void GR_PS5_FarFlush(void);
++extern void GR_PS5_FarDraw(int key);
++extern void GR_PS5_FarFrame(int camX, int camY, int camZ, const unsigned int* colours);
++extern int g_cfg_farMesh;		// [render] farMesh: how many regions around the camera are baked (0 = off)
++extern int g_cfg_farMeshNear;	// [render] farMeshNear: cells around the camera left to the game's own drawing
++
++extern void ConvertPolygonTypes(MODEL* model, _pct* pc);
++extern char* g_CurrentLevelSpoolData;
++extern int LoadingArea;
++extern void GR_PS5_FarPageSet(int page, const unsigned char* idx, int npal, const unsigned short* pal);
++extern int FarMesh_NumAreas(void);
++extern const char* FarMesh_SpoolPtr(int offset);
++extern int FarMesh_AreaInfo(int area, int* modelOffset, int* modelSize, int* gfxOffset, int* numTPages, const unsigned char** tpages);
++extern unsigned short vram[];
++extern char g_CurrentLevelFileName[64];
++extern int FarMesh_RegionOk(int region);
++typedef void (*FarObjCb)(PACKED_CELL_OBJECT* ppco, XZPAIR* nearCell, int cellx, int cellz);
++extern int FarMesh_ForEachObject(int region, FarObjCb cb);
++
++// ---- the data the bake needs, independent of what the game has loaded now ----
++// Models: every area's block copied out of the spool lump (kept in RAM by the PC port), over the permanent ones;
++// model numbers are global to the level. Texture pages: the same, into the renderer's page store.
++// the spool lump is 16 MB; an area entry is real when it has pages and its blocks lie inside it (the table has empty or
++// junk entries between the real areas)
++#define FAR_LUMP_SECTORS (16 * 1024 * 1024 / 2048)
++static int AreaValid(int mo, int ms, int go, int nt)
++{
++	return nt >= 1 && nt <= 16 && ms >= 1 && mo > 0 && go > 0 &&
++		mo + ms <= FAR_LUMP_SECTORS && go + 17 * nt <= FAR_LUMP_SECTORS;
++}
++
++static MODEL* g_fModel[MAX_MODEL_SLOTS];
++static MODEL* g_fLod[MAX_MODEL_SLOTS];
++static unsigned char g_pageState[128];		// 0 unknown, 1 stored, 2 not available
++static int g_dataReady = 0;
++static char g_levelName[64];
++
++static void BuildModels(void)
++{
++	static unsigned char fromArea[MAX_MODEL_SLOTS];
++	memset(g_fModel, 0, sizeof(g_fModel));
++	memset(g_fLod, 0, sizeof(g_fLod));
++	memset(fromArea, 0, sizeof(fromArea));
++
++	const int nAreas = FarMesh_NumAreas();
++	PsyX_Log("farmesh: building the models of %d areas\n", nAreas);
++	for (int a = 0; a < nAreas; a++)
++	{
++		int mo, ms, go, nt;
++		const unsigned char* tp;
++		if (!FarMesh_AreaInfo(a, &mo, &ms, &go, &nt, &tp) || !AreaValid(mo, ms, go, nt))
++			continue;
++		const char* src = FarMesh_SpoolPtr(mo);
++		PsyX_Log("farmesh: area %d model block at sector %d, %d sectors, %d tpages, src %p\n", a, mo, ms, nt, (const void*)src);
++		if (!src)
++			continue;
++		const size_t len = (size_t)ms * 2048;
++		char* copy = (char*)malloc(len);
++		memcpy(copy, src, len);
++		const unsigned short* newm = (const unsigned short*)(copy + (size_t)(ms - 1) * 2048);
++		int n = newm[0];
++		if (n < 0 || n > MAX_MODEL_SLOTS || (size_t)(n + 1) * 2 > 2048)
++			continue;
++		const unsigned short* nums = newm + 1;
++		PsyX_Log("farmesh: area %d lists %d models\n", a, n);
++		char* addr = copy;
++		for (int i = 0; i < n && addr + 8 < copy + len; i++)
++		{
++			const int m = nums[i];
++			const int size = *(int*)addr;
++			MODEL* model = (MODEL*)(addr + 4);
++			if (m >= 0 && m < MAX_MODEL_SLOTS && !g_fModel[m])
++			{
++				g_fModel[m] = model;
++				fromArea[m] = 1;
++			}
++			addr += size + 4;
++		}
++	}
++
++	PsyX_Log("farmesh: area models copied\n");
++	// the permanent models (not in any area's list) are the game's own, stable in memory
++	for (int m = 0; m < MAX_MODEL_SLOTS; m++)
++		if (!g_fModel[m])
++			g_fModel[m] = modelpointers[m];
++
++	// the models of the areas are processed as the game processes them when it loads an area; instanced models look
++	// their parent up in the global table, so it holds all of them meanwhile
++	static MODEL* saveModels[MAX_MODEL_SLOTS];
++	memcpy(saveModels, modelpointers, sizeof(saveModels));
++	memcpy(modelpointers, g_fModel, sizeof(saveModels));
++	PsyX_Log("farmesh: processing the models\n");
++	for (int m = 0; m < MAX_MODEL_SLOTS; m++)
++	{
++		if (!fromArea[m] || !g_fModel[m])
++			continue;
++		const MODEL* model = g_fModel[m];
++		if (model->instance_number != -1 && (model->instance_number < 0 || model->instance_number >= MAX_MODEL_SLOTS || !g_fModel[model->instance_number]))
++			continue;	// its parent is not in the level's tables
++		ProcessModel(m);
++	}
++	memcpy(modelpointers, saveModels, sizeof(saveModels));
++	PsyX_Log("farmesh: models processed\n");
++
++	for (int m = 0; m < MAX_MODEL_SLOTS; m++)
++	{
++		g_fLod[m] = g_fModel[m];
++		if (g_fModel[m] && Low2LowerDetailTable)
++		{
++			const unsigned short lod = Low2LowerDetailTable[m];
++			if (lod != 0xffff && lod != m && lod < MAX_MODEL_SLOTS && g_fModel[lod])
++				g_fLod[m] = g_fModel[lod];
++		}
++	}
++	PsyX_Log("farmesh: models of %d areas ready\n", nAreas);
++}
++
++// a texture page of the level into the renderer's page store, from the area that owns it or, failing that, from VRAM
++static int EnsurePage(int page)
++{
++	static unsigned char idx[256 * 256];
++	if (page < 0 || page >= 128)
++		return 0;
++	if (g_pageState[page])
++		return g_pageState[page] == 1;
++
++	const int nAreas = FarMesh_NumAreas();
++	for (int a = 0; a < nAreas; a++)
++	{
++		int mo, ms, go, nt;
++		const unsigned char* tp;
++		if (!FarMesh_AreaInfo(a, &mo, &ms, &go, &nt, &tp) || !AreaValid(mo, ms, go, nt))
++			continue;
++		for (int i = 0; i < nt; i++)
++		{
++			if (tp[i] != page)
++				continue;
++			// 17 sectors: the palettes (a count, then 16 colours each), then 256 rows of 128 bytes of 4-bit pixels
++			const unsigned char* blk = (const unsigned char*)FarMesh_SpoolPtr(go + 17 * i);
++			if (!blk)
++				continue;
++			const int npal = *(const int*)blk;
++			const unsigned short* pal = (const unsigned short*)(blk + 4);
++			const unsigned char* pix = blk + 2048;
++			for (int k = 0; k < 256 * 128; k++)
++			{
++				idx[k * 2] = pix[k] & 15;
++				idx[k * 2 + 1] = pix[k] >> 4;
++			}
++			GR_PS5_FarPageSet(page, idx, npal > 64 ? 64 : npal, pal);
++			g_pageState[page] = 1;
++			return 1;
++		}
++	}
++
++	// a permanent page: whatever the game has in VRAM now
++	const unsigned short tp = texture_pages[page];
++	if (tp != 0)
++	{
++		const int px = (tp & 15) * 64, py = ((tp >> 4) & 1) * 256;
++		for (int y = 0; y < 256; y++)
++			for (int x = 0; x < 64; x++)
++			{
++				const unsigned short w = vram[(py + y) * 1024 + px + x];
++				unsigned char* o = &idx[y * 256 + x * 4];
++				o[0] = w & 15; o[1] = (w >> 4) & 15; o[2] = (w >> 8) & 15; o[3] = (w >> 12) & 15;
++			}
++		unsigned short pal[64 * 16];
++		int npal = 0;
++		for (int i = 0; i < 32; i++)
++		{
++			const unsigned short clut = texture_cluts[page][i];
++			if (clut == 0)
++				break;
++			const int cx = (clut & 63) * 16, cy = clut >> 6;
++			for (int k = 0; k < 16; k++)
++				pal[i * 16 + k] = vram[cy * 1024 + cx + k];
++			npal = i + 1;
++		}
++		GR_PS5_FarPageSet(page, idx, npal, pal);
++		g_pageState[page] = 1;
++		return 1;
++	}
++	g_pageState[page] = 2;
++	return 0;
++}
++
++typedef struct { FarVertex* v; int n, cap; } Bucket;
++static Bucket g_bk[16][3];			// the chunk being built, by texture format
++static int g_bakeRegion = -1;
++static unsigned char g_state[1024];	// per region: 0 not tried, 1 baked, 2 not bakeable (other area)
++static int g_area = -2;
++
++static void Push(Bucket* b, const FarVertex* v)
++{
++	if (b->n == b->cap)
++	{
++		b->cap = b->cap ? b->cap * 2 : 4096;
++		b->v = (FarVertex*)realloc(b->v, sizeof(FarVertex) * b->cap);
++	}
++	b->v[b->n++] = *v;
++}
++
++// one textured quad (the game's vertex order v0 v1 v3 v2) as two triangles (0 1 2) (1 2 3)
++static void AddQuad(Bucket* b, const float p[4][3], const UV_INFO uv[4], unsigned short page, unsigned short clut, int col, int flags)
++{
++	static const int tri[6] = { 0, 1, 2, 1, 2, 3 };
++	for (int k = 0; k < 6; k++)
++	{
++		const int i = tri[k];
++		FarVertex v;
++		v.x = p[i][0]; v.y = p[i][1]; v.z = p[i][2];
++		v.page = page; v.clut = clut;
++		v.u = uv[i].u; v.v = uv[i].v;
++		v.col = (unsigned char)col; v.flags = (unsigned char)flags;
++		Push(b, &v);
++	}
++}
++
++static void BakeObject(PACKED_CELL_OBJECT* ppco, XZPAIR* nearCell, int cellx, int cellz)
++{
++	CELL_OBJECT co;
++	QuickUnpackCellObject(ppco, nearCell, &co);
++
++	MODEL* model = g_fModel[co.type];
++	if (!model || (model->shape_flags & SHAPE_FLAG_SPRITE))
++		return;
++
++	const int isTile = (model->shape_flags & (SHAPE_FLAG_WATER | SHAPE_FLAG_TILE)) || (model->flags2 & (MODEL_FLAG_PATH | MODEL_FLAG_GRASS));
++	const int isWet = (model->shape_flags & SHAPE_FLAG_WATER) || (model->flags2 & MODEL_FLAG_GRASS);
++	MODEL* use = g_fLod[co.type] ? g_fLod[co.type] : model;
++
++	plotContext.polySizes = PolySizes;
++	ConvertPolygonTypes(use, &plotContext);
++
++	// chunk of this cell and its origin (world)
++	const int rcx = cellx % MAP_REGION_SIZE, rcz = cellz % MAP_REGION_SIZE;
++	const int chunk = ((rcz >> 3) << 2) + (rcx >> 3);
++	const float ox = (float)(((cellx - (rcx & 7)) - (cells_across / 2)) * MAP_CELL_SIZE);
++	const float oz = (float)(((cellz - (rcz & 7)) - (cells_down / 2)) * MAP_CELL_SIZE);
++
++	// model -> world: the object's rotation about Y (matrixtable, 4096 = 1) and its position
++	const int yang = co.yang;
++	float R[3][3];
++	for (int i = 0; i < 3; i++)
++		for (int j = 0; j < 3; j++)
++			R[i][j] = yang > 0 ? (float)matrixtable[yang].m[i][j] / 4096.0f : (i == j ? 1.0f : 0.0f);
++
++	SVECTOR* src = GET_MODEL_DATA(SVECTOR, use, vertices);
++	PL_POLYFT4* polys = GET_MODEL_DATA(PL_POLYFT4, use, poly_block);
++	const int rotCol = (yang >> 3) * 4;
++
++	int i = use->num_polys;
++	while (i-- > 0)
++	{
++		const u_char ptype = polys->id & 31;
++		PL_POLYFT4* next = (PL_POLYFT4*)((char*)polys + PolySizes[ptype]);
++
++		if (!isTile && ptype != 11 && ptype != 21 && ptype != 23)
++		{
++			polys = next;
++			continue;
++		}
++
++		// the far field's store addresses a texture by page id and palette index
++		const unsigned short page = polys->texture_set;
++		const unsigned short clut = polys->texture_id;
++		const int fmt = 0;
++		if (!EnsurePage(page))
++		{
++			polys = next;
++			continue;
++		}
++
++		const int idx[4] = { polys->v0, polys->v1, polys->v3, polys->v2 };
++		const UV_INFO uv[4] = { polys->uv0, polys->uv1, polys->uv3, polys->uv2 };
++		float p[4][3];
++		for (int k = 0; k < 4; k++)
++		{
++			const SVECTOR* sv = &src[idx[k]];
++			const float x = (float)sv->vx, y = (float)sv->vy, z = (float)sv->vz;
++			p[k][0] = (float)co.pos.vx + R[0][0] * x + R[0][1] * y + R[0][2] * z - ox;
++			p[k][1] = (float)co.pos.vy + R[1][0] * x + R[1][1] * y + R[1][2] * z;
++			p[k][2] = (float)co.pos.vz + R[2][0] * x + R[2][1] * y + R[2][2] * z - oz;
++		}
++
++		int col, flags;
++		if (isTile)
++		{
++			col = 33;
++			flags = 2 | (isWet ? 1 : 0);
++		}
++		else
++		{
++			col = (ptype == 21) ? 32 : ((rotCol - polys->th) & 31);
++			flags = 0;
++		}
++		AddQuad(&g_bk[chunk][fmt], p, uv, page, clut, col, flags);
++		polys = next;
++	}
++}
++
++static void BakeRegion(int region)
++{
++	// the model getters of instanced models look in the global table: give them the far field's
++	static MODEL* saveModels[MAX_MODEL_SLOTS];
++	memcpy(saveModels, modelpointers, sizeof(saveModels));
++	memcpy(modelpointers, g_fModel, sizeof(saveModels));
++
++	for (int c = 0; c < 16; c++)
++		for (int f = 0; f < 3; f++)
++			g_bk[c][f].n = 0;
++
++	if (!FarMesh_ForEachObject(region, BakeObject))
++	{
++		memcpy(modelpointers, saveModels, sizeof(saveModels));
++		g_state[region] = 2;
++		return;
++	}
++	memcpy(modelpointers, saveModels, sizeof(saveModels));
++
++	const int rx = region % regions_across, rz = region / regions_across;
++	int total = 0;
++	for (int c = 0; c < 16; c++)
++	{
++		const int cx = rx * MAP_REGION_SIZE + (c & 3) * 8, cz = rz * MAP_REGION_SIZE + (c >> 2) * 8;
++		const int ox = (cx - cells_across / 2) * MAP_CELL_SIZE, oz = (cz - cells_down / 2) * MAP_CELL_SIZE;
++		for (int f = 0; f < 3; f++)
++		{
++			if (g_bk[c][f].n > 0)
++			{
++				GR_PS5_FarChunkSet(region * 16 + c, f, ox, 0, oz, g_bk[c][f].v, g_bk[c][f].n);
++				total += g_bk[c][f].n;
++			}
++		}
++	}
++	GR_PS5_FarFlush();
++	g_state[region] = 1;
++	PsyX_Log("farmesh: region %d (%d,%d) baked, %d vertices\n", region, rx, rz, total);
++}
++
++// the colour of the ground tiles as DrawTILES computes it
++static unsigned int TileColour(void)
++{
++	unsigned int colour = 0x2C000000;
++	const int combo = combointensity;
++	if (gTimeOfDay > -1)
++	{
++		if (gTimeOfDay < TIME_NIGHT)
++			colour = combo & 0xffffffU | 0x2C000000;
++		else if (gTimeOfDay == TIME_NIGHT)
++			colour = ((combo >> 16 & 255) * 171 >> 9) << 16 | ((combo >> 8 & 255) * 171 >> 9) << 8 | ((combo & 255) * 171 >> 9) | 0x2C000000U;
++	}
++	if (gWeather - 1U < 2)
++	{
++		unsigned int col = colour >> 2 & 63;
++		colour = col * 0x30000 | col * 0x300 | col * 3 | 0x2C000000;
++	}
++	return colour;
++}
++
++void FarMesh_Update(int camCellX, int camCellZ)
++{
++	if (g_cfg_farMesh <= 0 || regions_across <= 0 || g_CurrentLevelSpoolData == NULL || LoadingArea || LoadedArea < 0)
++		return;
++
++	// a new level is a new set of meshes, models and pages (an area change is not: all areas are in the far field)
++	if (!g_dataReady || strcmp(g_levelName, g_CurrentLevelFileName) != 0)
++	{
++		GR_PS5_FarClear();
++		memset(g_state, 0, sizeof(g_state));
++		memset(g_pageState, 0, sizeof(g_pageState));
++		strncpy(g_levelName, g_CurrentLevelFileName, sizeof(g_levelName) - 1);
++		BuildModels();
++		g_dataReady = 1;
++	}
++
++	const int rx = camCellX / MAP_REGION_SIZE, rz = camCellZ / MAP_REGION_SIZE;
++	const int regionsDown = cells_down / MAP_REGION_SIZE;
++	const int R = g_cfg_farMesh;
++
++	// one region per frame, the nearest not yet baked first
++	int baked = 0;
++	for (int d = 0; d <= R && !baked; d++)
++	{
++		for (int dz = -d; dz <= d && !baked; dz++)
++		{
++			for (int dx = -d; dx <= d && !baked; dx++)
++			{
++				if (abs(dx) != d && abs(dz) != d)
++					continue;
++				const int nx = rx + dx, nz = rz + dz;
++				if (nx < 0 || nz < 0 || nx >= regions_across || nz >= regionsDown)
++					continue;
++				const int region = nx + nz * regions_across;
++				if (region >= 1024 || g_state[region] != 0)
++					continue;
++				if (!FarMesh_RegionOk(region))
++				{
++					g_state[region] = 2;
++					continue;
++				}
++				BakeRegion(region);
++				baked = 1;
++			}
++		}
++	}
++
++	// the chunks to draw this frame: baked, outside the near range, in front of the camera
++	const MATRIX* M = &inv_camera_matrix;
++	const float near = (float)g_cfg_farMeshNear * MAP_CELL_SIZE;
++	for (int dz = -R; dz <= R; dz++)
++	{
++		for (int dx = -R; dx <= R; dx++)
++		{
++			const int nx = rx + dx, nz = rz + dz;
++			if (nx < 0 || nz < 0 || nx >= regions_across || nz >= regionsDown)
++				continue;
++			const int region = nx + nz * regions_across;
++			if (region >= 1024 || g_state[region] != 1)
++				continue;
++			for (int c = 0; c < 16; c++)
++			{
++				const int cx = nx * MAP_REGION_SIZE + (c & 3) * 8, cz = nz * MAP_REGION_SIZE + (c >> 2) * 8;
++				// chunk centre, relative to the camera
++				const float wx = (float)((cx + 4 - cells_across / 2) * MAP_CELL_SIZE) - (float)camera_position.vx;
++				const float wz = (float)((cz + 4 - cells_down / 2) * MAP_CELL_SIZE) - (float)camera_position.vz;
++				const float rad = 4.0f * MAP_CELL_SIZE * 1.5f;
++				// all of it inside the near square: the game draws it
++				if (fabsf(wx) + rad * 0.7f < near && fabsf(wz) + rad * 0.7f < near)
++					continue;
++				const float vx = (M->m[0][0] * wx + M->m[0][2] * wz) / 4096.0f;
++				const float vz = (M->m[2][0] * wx + M->m[2][2] * wz) / 4096.0f;
++				if (vz + rad < 0.0f || fabsf(vx) > (vz + rad) * 1.3f + rad)
++					continue;
++				GR_PS5_FarDraw(region * 16 + c);
++			}
++		}
++	}
++
++	unsigned int colours[36];
++	for (int i = 0; i < 32; i++)
++		colours[i] = plotContext.f4colourTable[i];
++	colours[32] = (unsigned int)combointensity & 0x2ffffff | 0x2c000000;
++	colours[33] = TileColour();
++	colours[34] = colours[35] = 0;
++	GR_PS5_FarFrame(camera_position.vx, camera_position.vy, camera_position.vz, colours);
++}
++#endif // __PROSPERO__

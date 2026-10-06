@@ -25,7 +25,7 @@ index ad168c3..889dba8 100644
  #pragma pack(push,1)
  typedef struct
 diff --git a/include/PsyX/common/pgxp_defs.h b/include/PsyX/common/pgxp_defs.h
-index 825f819..696aff6 100644
+index 825f819..75c97ed 100644
 --- a/include/PsyX/common/pgxp_defs.h
 +++ b/include/PsyX/common/pgxp_defs.h
 @@ -9,6 +9,19 @@
@@ -48,7 +48,7 @@ index 825f819..696aff6 100644
  //-------------------------------------
  
  // in C++, VERTTYPE can be declared as half
-@@ -46,16 +59,33 @@ extern PGXPVector3D g_FP_SXYZ2;
+@@ -46,16 +59,39 @@ extern PGXPVector3D g_FP_SXYZ2;
  void	PGXP_ClearCache();
  
  /* emits new PGXP vertex */
@@ -62,6 +62,12 @@ index 825f819..696aff6 100644
 +int		PGXP_GetCacheCandidates(PGXPVData* out, int maxN, uint lookup, PGXPIndex indexhint);
 +
 +/* shadow casters: whole models (SVECTOR triples) transformed with the current GTE matrices, nothing culled */
++/* real-time lights, camera relative world space (y is down), colour 0..255, dir = NULL for a point light */
++void	PS5_LightsReset();
++void	PS5_LightAdd(const float* pos, const float* col255, float radius, const float* dir, float cosHalfCone, int group);
++int		PS5_LightCount();
++int		PS5_LightsNearest(int maxN, float* a, float* b, float* c, int* group);
++
 +void	PGXP_ShadowCasterReset();
 +void	PGXP_ShadowCasterTri(const void* a, const void* b, const void* c);
 +int		PGXP_ShadowCasterCount();
@@ -85,7 +91,7 @@ index 825f819..696aff6 100644
  
  #if defined(_LANGUAGE_C_PLUS_PLUS)||defined(__cplusplus)||defined(c_plusplus)
  }
-@@ -64,7 +94,7 @@ ushort	PGXP_GetIndex(int checkTransform);
+@@ -64,7 +100,7 @@ ushort	PGXP_GetIndex(int checkTransform);
  // special PGXP type
  typedef struct {		/* 2D short vector */
  	half vx, vy;
@@ -242,7 +248,7 @@ index f558b40..1e17294 100644
  	GR_Shutdown();
  	SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
 diff --git a/src/gpu/PsyX_GPU.cpp b/src/gpu/PsyX_GPU.cpp
-index 6e9e6f6..2133154 100644
+index 6e9e6f6..22cebb6 100644
 --- a/src/gpu/PsyX_GPU.cpp
 +++ b/src/gpu/PsyX_GPU.cpp
 @@ -50,7 +50,11 @@ struct GPUDrawSplit
@@ -391,7 +397,7 @@ index 6e9e6f6..2133154 100644
  {
  	assert(p0);
  
-@@ -750,6 +821,125 @@ void DrawSplit(const GPUDrawSplit& split)
+@@ -750,11 +821,152 @@ void DrawSplit(const GPUDrawSplit& split)
  
  extern int g_dbg_polygonSelected;
  
@@ -414,6 +420,9 @@ index 6e9e6f6..2133154 100644
 +	float dw, dh;
 +	DrawEnvDimensions(dw, dh);
 +	GR_PS5_SetShadowDisp(dw, dh);
++
++	extern void GR_PS5_UploadLights();
++	GR_PS5_UploadLights();
 +
 +	if (g_vertexIndex <= 5000 || g_splitIndex < 1 || !GR_PS5_ShadowBegin())
 +		return;
@@ -483,10 +492,8 @@ index 6e9e6f6..2133154 100644
 +	if (nVerts + used > 0)
 +		GR_UpdateVertexBufferRange(base, &g_vertexBuffer[base], nVerts + used);
 +
-+	for (int cascade = 0; cascade < 3; cascade++)
++	auto drawCasters = [&]()
 +	{
-+		GR_PS5_ShadowCascade(cascade);
-+
 +		if (nVerts > 0)
 +		{
 +			GR_SetTexture(g_splits[1].textureId, g_splits[1].texFormat);
@@ -505,11 +512,27 @@ index 6e9e6f6..2133154 100644
 +			}
 +			GR_PS5_SetShadowCutout(0);
 +		}
++	};
++
++	for (int cascade = 0; cascade < 3; cascade++)
++	{
++		GR_PS5_ShadowCascade(cascade);
++		drawCasters();
++	}
++
++	// the cars' headlights cast their own shadows
++	extern int GR_PS5_SpotCount();
++	extern void GR_PS5_SpotCascade(int k);
++	for (int k = 0; k < GR_PS5_SpotCount(); k++)
++	{
++		GR_PS5_SpotCascade(k);
++		drawCasters();
 +	}
 +
 +	GR_PS5_ShadowEnd();
 +
 +	passAcc += PsyX_NowMs() - passT0;
++	{ extern void GR_PS5_PerfCpu(int which, double ms); GR_PS5_PerfCpu(3, PsyX_NowMs() - passT0); }
 +	if (++passN == 120) { eprintf("shadow pass: %.2f ms/frame (cpu submit), verts=%d\n", passAcc / 120.0, nVerts + used); passN = 0; passAcc = 0; }
 +}
 +#endif
@@ -517,7 +540,17 @@ index 6e9e6f6..2133154 100644
  //
  // Draws all polygons after AggregatePTAG
  //
-@@ -787,9 +977,18 @@ void DrawAllSplits()
+ void DrawAllSplits()
+ {
++#ifdef __PROSPERO__
++	extern double PsyX_NowMs();
++	extern void GR_PS5_PerfCpu(int which, double ms);
++	const double perfDrawT0 = PsyX_NowMs();
++#endif
+ #ifdef _DEBUG
+ 	if (g_dbg_emulatorPaused)
+ 	{
+@@ -787,9 +999,55 @@ void DrawAllSplits()
  	// next code ideally should be called before EndScene
  	GR_UpdateVertexBuffer(g_vertexBuffer, g_vertexIndex);
  
@@ -525,18 +558,55 @@ index 6e9e6f6..2133154 100644
 +	ShadowPass();
 +#endif
 +
++#ifdef __PROSPERO__
++	extern int GR_PS5_PrepassUsable();
++	extern void GR_PS5_PrepassBegin();
++	extern void GR_PS5_PrepassEnd();
++	extern void GR_PS5_PrepassColour(int on);
++
++	static unsigned char prepassed[MAX_DRAW_SPLITS];
++	const int usePrepass = GR_PS5_PrepassUsable();
++	if (usePrepass)
++	{
++		GR_PS5_PrepassBegin();
++		for (int i = 1; i <= g_splitIndex; i++)
++		{
++			const GPUDrawSplit& sp = g_splits[i];
++			prepassed[i] = (sp.blendMode == BM_NONE && sp.drawenv.dfe && !sp.drawPrimMode && sp.numVerts > 0);
++			if (prepassed[i])
++				DrawSplit(sp);
++		}
++		GR_PS5_PrepassEnd();
++	}
++
++	for (int i = 1; i <= g_splitIndex; i++)
++	{
++		if (usePrepass && prepassed[i])
++		{
++			GR_PS5_PrepassColour(1);
++			DrawSplit(g_splits[i]);
++			GR_PS5_PrepassColour(0);
++		}
++		else
++			DrawSplit(g_splits[i]);
++	}
++#else
  	for (int i = 1; i <= g_splitIndex; i++)
  		DrawSplit(g_splits[i]);
++#endif
  
 +#ifdef __PROSPERO__
 +	extern void GR_PS5_ShadowFinish();
 +	GR_PS5_ShadowFinish();
 +#endif
 +
++#ifdef __PROSPERO__
++	GR_PS5_PerfCpu(2, PsyX_NowMs() - perfDrawT0);
++#endif
  	ClearSplits();
  }
  
-@@ -809,7 +1008,7 @@ void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive)
+@@ -809,7 +1067,7 @@ void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive)
  		P_TAG* polyTag = reinterpret_cast<P_TAG*>(p);
  #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
  		// force PGXP off
@@ -545,7 +615,7 @@ index 6e9e6f6..2133154 100644
  #endif
  		ParsePrimitive(polyTag);
  
-@@ -866,9 +1065,9 @@ inline int IsNull(POLY_FT3* poly)
+@@ -866,9 +1124,9 @@ inline int IsNull(POLY_FT3* poly)
  static int ProcessFlatLines(P_TAG* polyTag)
  {
  #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
@@ -557,7 +627,7 @@ index 6e9e6f6..2133154 100644
  #endif
  
  	const bool shadeTexOn = true;
-@@ -1027,9 +1226,9 @@ static int ProcessFlatLines(P_TAG* polyTag)
+@@ -1027,9 +1285,9 @@ static int ProcessFlatLines(P_TAG* polyTag)
  static int ProcessGouraudLines(P_TAG* polyTag)
  {
  #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
@@ -569,7 +639,7 @@ index 6e9e6f6..2133154 100644
  #endif
  
  	const bool shadeTexOn = true;
-@@ -1081,9 +1280,9 @@ static int ProcessGouraudLines(P_TAG* polyTag)
+@@ -1081,9 +1339,9 @@ static int ProcessGouraudLines(P_TAG* polyTag)
  static int ProcessFlatPoly(P_TAG* polyTag)
  {
  #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
@@ -581,7 +651,7 @@ index 6e9e6f6..2133154 100644
  #endif
  
  	const bool shadeTexOn = (polyTag->code & 1) == 0;
-@@ -1180,9 +1379,9 @@ static int ProcessFlatPoly(P_TAG* polyTag)
+@@ -1180,9 +1438,9 @@ static int ProcessFlatPoly(P_TAG* polyTag)
  static int ProcessGouraudPoly(P_TAG* polyTag)
  {
  #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
@@ -593,7 +663,7 @@ index 6e9e6f6..2133154 100644
  #endif
  
  	const bool shadeTexOn = true;
-@@ -1276,9 +1475,9 @@ static int ProcessGouraudPoly(P_TAG* polyTag)
+@@ -1276,9 +1534,9 @@ static int ProcessGouraudPoly(P_TAG* polyTag)
  static int ProcessTileAndSprt(P_TAG* polyTag)
  {
  #if USE_PGXP && USE_EXTENDED_PRIM_POINTERS
@@ -606,7 +676,7 @@ index 6e9e6f6..2133154 100644
  
  	// NOTE: TILE does not support switching shadeTex on real PSX
 diff --git a/src/gte/PsyX_GTE.cpp b/src/gte/PsyX_GTE.cpp
-index a9d42f0..a02d081 100644
+index a9d42f0..074c076 100644
 --- a/src/gte/PsyX_GTE.cpp
 +++ b/src/gte/PsyX_GTE.cpp
 @@ -1,4 +1,5 @@
@@ -708,7 +778,7 @@ index a9d42f0..a02d081 100644
  	g_pgxpTransformed = 1;
  	return nextIndex;
  }
-@@ -328,10 +373,228 @@ void PGXP_SetZOffsetScale(float offset, float scale)
+@@ -328,10 +373,283 @@ void PGXP_SetZOffsetScale(float offset, float scale)
  	g_pgxpZScale = scale;
  }
  
@@ -750,6 +820,61 @@ index a9d42f0..a02d081 100644
 +static int g_shcSpriteCount = 0;
 +
 +extern int g_shcBoxes;
++// Real-time lights of the frame (camera relative world space, y is down). The game's dynamic lights and the car headlights
++// register here; the uber shader lights every 3D fragment with the nearest ones.
++#define PS5_MAX_LIGHTS	64
++static struct { float pos[3], radius, col[3], cone, dir[3], spot; int group; } g_ps5Lights[PS5_MAX_LIGHTS];
++static int g_ps5LightCount = 0;
++
++void PS5_LightsReset() { g_ps5LightCount = 0; }
++int PS5_LightCount() { return g_ps5LightCount; }
++
++// colour 0..255 as the game uses it; spot: dir is the unit direction of the cone and cone the cosine of its half angle
++// group: 0 none, otherwise lights of one car share a shadow map
++void PS5_LightAdd(const float* pos, const float* col255, float radius, const float* dir, float cone, int group)
++{
++	if (g_ps5LightCount >= PS5_MAX_LIGHTS)
++		return;
++	auto& l = g_ps5Lights[g_ps5LightCount++];
++	for (int i = 0; i < 3; i++) { l.pos[i] = pos[i]; l.col[i] = col255[i] / 255.0f; l.dir[i] = dir ? dir[i] : 0.0f; }
++	l.radius = radius;
++	l.cone = cone;
++	l.spot = dir ? 1.0f : 0.0f;
++	l.group = group;
++}
++
++// copies the lights nearest to the camera into the arrays the shader takes (a, b, c = vec4 each); returns how many
++int PS5_LightsNearest(int maxN, float* a, float* b, float* c, int* group)
++{
++	int idx[PS5_MAX_LIGHTS];
++	float dist[PS5_MAX_LIGHTS];
++	const int n = g_ps5LightCount;
++	for (int i = 0; i < n; i++)
++	{
++		idx[i] = i;
++		dist[i] = g_ps5Lights[i].pos[0] * g_ps5Lights[i].pos[0] + g_ps5Lights[i].pos[1] * g_ps5Lights[i].pos[1] + g_ps5Lights[i].pos[2] * g_ps5Lights[i].pos[2];
++	}
++	for (int i = 1; i < n; i++)	// insertion sort, n is small
++	{
++		const int k = idx[i]; const float d = dist[i]; int j = i - 1;
++		while (j >= 0 && dist[j] > d) { idx[j + 1] = idx[j]; dist[j + 1] = dist[j]; j--; }
++		idx[j + 1] = k; dist[j + 1] = d;
++	}
++	const int m = n < maxN ? n : maxN;
++	for (int i = 0; i < m; i++)
++	{
++		const auto& l = g_ps5Lights[idx[i]];
++		a[i * 4 + 0] = l.pos[0]; a[i * 4 + 1] = l.pos[1]; a[i * 4 + 2] = l.pos[2]; a[i * 4 + 3] = l.radius;
++		b[i * 4 + 0] = l.col[0]; b[i * 4 + 1] = l.col[1]; b[i * 4 + 2] = l.col[2]; b[i * 4 + 3] = l.cone;
++		c[i * 4 + 0] = l.dir[0]; c[i * 4 + 1] = l.dir[1]; c[i * 4 + 2] = l.dir[2]; c[i * 4 + 3] = l.spot;
++		group[i] = l.group;
++	}
++	return m;
++}
++
++// the GTE's projection plane distance (H): the sky pass of the renderer needs it to rebuild view rays
++int PS5_GteH() { return (int)C2_H; }
++
 +double PsyX_NowMs()
 +{
 +	struct timespec ts;
@@ -939,7 +1064,7 @@ index a9d42f0..a02d081 100644
  	{
  		out->px = 0.0f;
  		out->py = 0.0f;
-@@ -342,27 +605,46 @@ int PGXP_GetCacheData(PGXPVData* out, uint lookup, ushort indexhint)
+@@ -342,27 +660,46 @@ int PGXP_GetCacheData(PGXPVData* out, uint lookup, ushort indexhint)
  		return 0;
  	}
  
@@ -1058,11 +1183,185 @@ index 9102047..082489d 100644
  	vsync_callback = f;
  	return old;
  }
+diff --git a/src/psx/LIBGPU.C b/src/psx/LIBGPU.C
+index 8d11166..943a97b 100644
+--- a/src/psx/LIBGPU.C
++++ b/src/psx/LIBGPU.C
+@@ -61,14 +61,24 @@ int DrawSync(int mode)
+ 	return 0;
+ }
+ 
++#ifdef __PROSPERO__
++extern void GR_PS5_HDVramWrite(int x, int y, int w, int h);
++#endif
++
+ int LoadImage(RECT16* rect, u_long* p)
+ {
++#ifdef __PROSPERO__
++	GR_PS5_HDVramWrite(rect->x, rect->y, rect->w, rect->h);
++#endif
+ 	GR_CopyVRAM((unsigned short*)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
+ 	return 0;
+ }
+ 
+ int LoadImage2(RECT16* rect, u_long* p)
+ {
++#ifdef __PROSPERO__
++	GR_PS5_HDVramWrite(rect->x, rect->y, rect->w, rect->h);
++#endif
+ 	GR_CopyVRAM((unsigned short*)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
+ 
+ 	// simulate immediate mode
+@@ -130,6 +140,9 @@ int MargePrim(void* p0, void* p1)
+ 
+ int MoveImage(RECT16* rect, int x, int y)
+ {
++#ifdef __PROSPERO__
++	GR_PS5_HDVramWrite(x, y, rect->w, rect->h);
++#endif
+ 	GR_CopyVRAM(NULL, rect->x, rect->y, rect->w, rect->h, x, y);
+ 	return 0;
+ }
 diff --git a/src/render/PsyX_render.cpp b/src/render/PsyX_render.cpp
-index 9324471..7efa9fc 100644
+index 9324471..480583b 100644
 --- a/src/render/PsyX_render.cpp
 +++ b/src/render/PsyX_render.cpp
-@@ -44,6 +44,25 @@ extern "C" {
+@@ -10,6 +10,134 @@
+ #include <assert.h>
+ #include <string.h>
+ 
++#ifdef __PROSPERO__
++// ---- OpenGL call profiler (per function: calls and CPU time), logged with the frame profiler ----
++#include <time.h>
++#include <type_traits>
++struct GlProf { const char* name; unsigned long long ns; unsigned count; };
++GlProf g_glprof[64];
++static inline unsigned long long glNow() { timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (unsigned long long)ts.tv_sec * 1000000000ull + ts.tv_nsec; }
++template<class F> static inline auto glprof(int i, F f) -> decltype(f())
++{
++	const unsigned long long t0 = glNow();
++	if constexpr (std::is_void<decltype(f())>::value)
++	{
++		f();
++		g_glprof[i].ns += glNow() - t0; g_glprof[i].count++;
++	}
++	else
++	{
++		auto r = f();
++		g_glprof[i].ns += glNow() - t0; g_glprof[i].count++;
++		return r;
++	}
++}
++#define GLP(i, call) glprof(i, [&]() { return call; })
++#undef glUseProgram
++#define glUseProgram(...) GLP(0, glad_glUseProgram(__VA_ARGS__))
++#undef glBindTexture
++#define glBindTexture(...) GLP(1, glad_glBindTexture(__VA_ARGS__))
++#undef glActiveTexture
++#define glActiveTexture(...) GLP(2, glad_glActiveTexture(__VA_ARGS__))
++#undef glUniform1i
++#define glUniform1i(...) GLP(3, glad_glUniform1i(__VA_ARGS__))
++#undef glUniform1f
++#define glUniform1f(...) GLP(4, glad_glUniform1f(__VA_ARGS__))
++#undef glUniform2f
++#define glUniform2f(...) GLP(5, glad_glUniform2f(__VA_ARGS__))
++#undef glUniformMatrix4fv
++#define glUniformMatrix4fv(...) GLP(6, glad_glUniformMatrix4fv(__VA_ARGS__))
++// glDrawArrays is profiled by vertex count: [0] < 100, [1] < 1000, [2] < 10000, [3] more
++struct DrawBucket { unsigned long long ns; unsigned calls; unsigned long long verts; };
++static DrawBucket g_drawBuckets[4];
++static inline void glDrawArraysProf(GLenum mode, GLint first, GLsizei count)
++{
++	const unsigned long long t0 = glNow();
++	glad_glDrawArrays(mode, first, count);
++	const unsigned long long dt = glNow() - t0;
++	const int b = count < 100 ? 0 : (count < 1000 ? 1 : (count < 10000 ? 2 : 3));
++	g_drawBuckets[b].ns += dt; g_drawBuckets[b].calls++; g_drawBuckets[b].verts += count;
++	g_glprof[7].ns += dt; g_glprof[7].count++;
++}
++#undef glDrawArrays
++#define glDrawArrays(...) glDrawArraysProf(__VA_ARGS__)
++#undef glBindFramebuffer
++#define glBindFramebuffer(...) GLP(8, glad_glBindFramebuffer(__VA_ARGS__))
++#undef glViewport
++#define glViewport(...) GLP(9, glad_glViewport(__VA_ARGS__))
++#undef glScissor
++#define glScissor(...) GLP(10, glad_glScissor(__VA_ARGS__))
++#undef glEnable
++#define glEnable(...) GLP(11, glad_glEnable(__VA_ARGS__))
++#undef glDisable
++#define glDisable(...) GLP(12, glad_glDisable(__VA_ARGS__))
++#undef glBlendFunc
++#define glBlendFunc(...) GLP(13, glad_glBlendFunc(__VA_ARGS__))
++#undef glBlendEquation
++#define glBlendEquation(...) GLP(14, glad_glBlendEquation(__VA_ARGS__))
++#undef glStencilFunc
++#define glStencilFunc(...) GLP(15, glad_glStencilFunc(__VA_ARGS__))
++#undef glStencilOp
++#define glStencilOp(...) GLP(16, glad_glStencilOp(__VA_ARGS__))
++#undef glStencilMask
++#define glStencilMask(...) GLP(17, glad_glStencilMask(__VA_ARGS__))
++#undef glColorMask
++#define glColorMask(...) GLP(18, glad_glColorMask(__VA_ARGS__))
++#undef glDepthMask
++#define glDepthMask(...) GLP(19, glad_glDepthMask(__VA_ARGS__))
++#undef glDepthFunc
++#define glDepthFunc(...) GLP(20, glad_glDepthFunc(__VA_ARGS__))
++#undef glBufferSubData
++#define glBufferSubData(...) GLP(21, glad_glBufferSubData(__VA_ARGS__))
++#undef glBindBuffer
++#define glBindBuffer(...) GLP(22, glad_glBindBuffer(__VA_ARGS__))
++#undef glClear
++#define glClear(...) GLP(23, glad_glClear(__VA_ARGS__))
++#undef glGetIntegerv
++#define glGetIntegerv(...) GLP(24, glad_glGetIntegerv(__VA_ARGS__))
++#undef glIsEnabled
++#define glIsEnabled(...) GLP(25, glad_glIsEnabled(__VA_ARGS__))
++#undef glFramebufferTextureLayer
++#define glFramebufferTextureLayer(...) GLP(26, glad_glFramebufferTextureLayer(__VA_ARGS__))
++#undef glTexSubImage2D
++#define glTexSubImage2D(...) GLP(27, glad_glTexSubImage2D(__VA_ARGS__))
++#undef glTexImage2D
++#define glTexImage2D(...) GLP(28, glad_glTexImage2D(__VA_ARGS__))
++#undef glGenerateMipmap
++#define glGenerateMipmap(...) GLP(29, glad_glGenerateMipmap(__VA_ARGS__))
++#undef glBindVertexArray
++#define glBindVertexArray(...) GLP(30, glad_glBindVertexArray(__VA_ARGS__))
++#undef glVertexAttribPointer
++#define glVertexAttribPointer(...) GLP(31, glad_glVertexAttribPointer(__VA_ARGS__))
++#undef glEnableVertexAttribArray
++#define glEnableVertexAttribArray(...) GLP(32, glad_glEnableVertexAttribArray(__VA_ARGS__))
++#undef glBlendFuncSeparate
++#define glBlendFuncSeparate(...) GLP(33, glad_glBlendFuncSeparate(__VA_ARGS__))
++#undef glPolygonOffset
++#define glPolygonOffset(...) GLP(34, glad_glPolygonOffset(__VA_ARGS__))
++#undef glGetUniformLocation
++#define glGetUniformLocation(...) GLP(35, glad_glGetUniformLocation(__VA_ARGS__))
++#undef glUniform4f
++#define glUniform4f(...) GLP(36, glad_glUniform4f(__VA_ARGS__))
++#undef glUniform3f
++#define glUniform3f(...) GLP(37, glad_glUniform3f(__VA_ARGS__))
++#undef glTexSubImage3D
++#define glTexSubImage3D(...) GLP(38, glad_glTexSubImage3D(__VA_ARGS__))
++#undef glDrawBuffer
++#define glDrawBuffer(...) GLP(39, glad_glDrawBuffer(__VA_ARGS__))
++#undef glReadBuffer
++#define glReadBuffer(...) GLP(40, glad_glReadBuffer(__VA_ARGS__))
++#undef glCopyTexSubImage2D
++#define glCopyTexSubImage2D(...) GLP(41, glad_glCopyTexSubImage2D(__VA_ARGS__))
++#undef glBlitFramebuffer
++#define glBlitFramebuffer(...) GLP(42, glad_glBlitFramebuffer(__VA_ARGS__))
++#undef glFinish
++#define glFinish(...) GLP(43, glad_glFinish(__VA_ARGS__))
++#undef glFlush
++#define glFlush(...) GLP(44, glad_glFlush(__VA_ARGS__))
++static const char* const g_glprofNames[] = { "glUseProgram", "glBindTexture", "glActiveTexture", "glUniform1i", "glUniform1f", "glUniform2f", "glUniformMatrix4fv", "glDrawArrays", "glBindFramebuffer", "glViewport", "glScissor", "glEnable", "glDisable", "glBlendFunc", "glBlendEquation", "glStencilFunc", "glStencilOp", "glStencilMask", "glColorMask", "glDepthMask", "glDepthFunc", "glBufferSubData", "glBindBuffer", "glClear", "glGetIntegerv", "glIsEnabled", "glFramebufferTextureLayer", "glTexSubImage2D", "glTexImage2D", "glGenerateMipmap", "glBindVertexArray", "glVertexAttribPointer", "glEnableVertexAttribArray", "glBlendFuncSeparate", "glPolygonOffset", "glGetUniformLocation", "glUniform4f", "glUniform3f", "glTexSubImage3D", "glDrawBuffer", "glReadBuffer", "glCopyTexSubImage2D", "glBlitFramebuffer", "glFinish", "glFlush" };
++#endif
++
+ #ifdef _WIN32
+ #define NOMINMAX
+ #define WIN32_LEAN_AND_MEAN
+@@ -44,6 +172,34 @@ extern "C" {
  #endif
  
  extern SDL_Window* g_window;
@@ -1070,7 +1369,16 @@ index 9324471..7efa9fc 100644
 +// Render the game into our own FBO instead of the swapchain buffer: reading the window-system buffer
 +// (glBlitFramebuffer in GR_StoreFrameBuffer) costs ~36 ms per frame on this driver.
 +static GLuint g_screenFBO = 0;
-+static GLuint g_screenColorTex = 0, g_screenDepthRB = 0;
++static GLuint g_screenColorTex = 0, g_screenDepthRB = 0, g_screenDepthTex = 0;
++float g_cfg_ps5Bloom = 0.45f, g_cfg_ps5SSAO = 0.6f;
++static int g_ps5SSAOok = 0;
++static GLuint g_bloomTex = 0, g_bloomFBO = 0;
++static int g_bloomW = 0, g_bloomH = 0;
++extern int g_ps5ModOn;
++void GR_PS5_PerfMark(int i);
++extern float g_perfGpuMs, g_perfCpuMs;
++static int g_ps5PassNow = 0;		// value of uPass for the main draws (2 while the shadows are on)
++int g_cfg_ps5Prepass = 1;
 +static int g_surfaceW = 0, g_surfaceH = 0;	// real swapchain size; g_windowWidth/Height become the (super-sampled) render size
 +int g_cfg_ps5RenderScale = 1;
 +void GR_PS5_InitShadows();
@@ -1088,7 +1396,7 @@ index 9324471..7efa9fc 100644
  
  
  #define MAX_NUM_VERTEX_BUFFERS		(2)
-@@ -272,6 +291,9 @@ GrPBO		g_glOffscreenPBO;
+@@ -272,6 +428,9 @@ GrPBO		g_glOffscreenPBO;
  #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
  int GR_InitialiseGLContext(char* windowName, int fullscreen)
  {
@@ -1098,7 +1406,7 @@ index 9324471..7efa9fc 100644
  	int windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
  
  #if defined(__ANDROID__)
-@@ -351,7 +373,11 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
+@@ -351,7 +510,11 @@ int GR_InitialiseGLContext(char* windowName, int fullscreen)
  int GR_InitialiseGLExt()
  {
  #ifdef USE_GLAD
@@ -1110,7 +1418,7 @@ index 9324471..7efa9fc 100644
  
  	if (err == 0)
  		return 0;
-@@ -428,7 +454,9 @@ void GR_Shutdown()
+@@ -428,7 +591,9 @@ void GR_Shutdown()
  
  void GR_UpdateSwapIntervalState(int swapInterval)
  {
@@ -1121,7 +1429,7 @@ index 9324471..7efa9fc 100644
  	SDL_GL_SetSwapInterval(swapInterval);
  #endif
  }
-@@ -436,6 +464,9 @@ void GR_UpdateSwapIntervalState(int swapInterval)
+@@ -436,6 +601,9 @@ void GR_UpdateSwapIntervalState(int swapInterval)
  void GR_BeginScene()
  {
  	g_lastBoundTexture = 0;
@@ -1131,17 +1439,18 @@ index 9324471..7efa9fc 100644
  
  #if USE_OPENGL
  #ifdef RENDERER_OGLES
-@@ -626,6 +657,9 @@ static const char* gpu_shader_common = R"(
+@@ -626,6 +794,10 @@ static const char* gpu_shader_common = R"(
  	varying vec4 v_color;
  	varying vec4 v_page_clut;
  	varying float v_z;
 +	varying vec4 v_shadowPos;	// position in shadow-map clip space (PS5 shadows)
 +	varying float v_fogDepth;	// view depth / 128, PS5 fog
++	varying float v_hdKey;		// VRAM texture page (x/64 + 16*y/256), PS5 HD textures
 +	varying float v_is3D;
  )";
  
  const char* gpu_shader_4 = GPU_FRAGMENT_SAMPLE_SHADER(4);
-@@ -640,6 +674,109 @@ const char* gpu_shader_32_rgba =
+@@ -640,6 +812,179 @@ const char* gpu_shader_32_rgba =
  	"		fragColor = dither(color * v_color);\n"\
  	"	}\n";
  
@@ -1203,6 +1512,17 @@ index 9324471..7efa9fc 100644
 +	"	uniform float uShadowStrength;\n"
 +	"	uniform float uShadowBias;\n"
 +	"	uniform int uShadowDebug;\n"
++	"	uniform float uWet;\n"
++	"	uniform int uLightN;\n"
++	"	uniform float uLightStrength;\n"
++	"	uniform vec4 uLightA[16];\n"
++	"	uniform vec4 uLightB[16];\n"
++	"	uniform vec4 uLightC[16];\n"
++	"	uniform mat4 uSpotVP[3];\n"
++	"	uniform sampler2DArrayShadow uSpotMap;\n"
++	"	uniform int uHDMask;\n"
++	"	uniform vec4 uHDHole[32];\n"
++	"	uniform sampler2DArray uHDTex;\n"
 +	"	uniform int uFogOn;\n"
 +	"	uniform float uFogR;\n"
 +	"	uniform float uFogG;\n"
@@ -1211,12 +1531,20 @@ index 9324471..7efa9fc 100644
 +	"	uniform float uFogEnd;\n"
 +	"	void main() {\n"
 +	"		vec4 color;\n"
-+	"		if (texMode == 3) {\n"
++	"		int hdKey = int(v_hdKey + 0.5);\n"
++	"		vec4 hole = uHDHole[hdKey];\n"
++	"		bool inHole = v_texcoord.x >= hole.x && v_texcoord.x < hole.z && v_texcoord.y >= hole.y && v_texcoord.y < hole.w;\n"
++	"		if (texMode != 3 && uPass != 1 && ((uHDMask >> hdKey) & 1) != 0 && !inHole) {\n"
++	"			vec4 hd = texture(uHDTex, vec3(v_texcoord.xy / 256.0, float(hdKey)));\n"
++	"			if (hd.a < 0.5) discard;\n"
++	"			color = vec4(hd.rgb, 1.0);\n"
++	"		} else if (texMode == 3) {\n"
 +	"			vec2 tc = v_texcoord.xy * texelSize + texelSize * 0.5;\n"
 +	"			color = texture2D(s_texture, tc);\n"
 +	"		} else {\n"
 +	"			color = (bilinearFilter > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);\n"
 +	"		}\n"
++	"		if (uPass == 1 || uPass == 3) { fragColor = vec4(0.0); return; }\n"
 +	"		vec4 outc = dither(color * v_color);\n"
 +	"		if (uPass == 2 && v_is3D > 0.5) {\n"
 +	"			float lit = 1.0;\n"
@@ -1229,15 +1557,66 @@ index 9324471..7efa9fc 100644
 +	"			}\n"
 +	"			if (casc >= 0) {\n"
 +	"				float texel = 1.0 / uShadowSize;\n"
++	"				float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
++	"				float ca = cos(ign * 6.2831853), sa = sin(ign * 6.2831853);\n"
++	"				const vec2 pd[12] = vec2[12](vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621), vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893), vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));\n"
++	"				int taps = (casc == 0) ? 12 : ((casc == 1) ? 6 : 4);\n"
 +	"				float sum = 0.0;\n"
-+	"				for (int dx = -1; dx <= 1; dx++)\n"
-+	"					for (int dy = -1; dy <= 1; dy++)\n"
-+	"						sum += texture(uShadowMap, vec4(sc.xy + vec2(float(dx), float(dy)) * texel, float(casc), sc.z - uShadowBias));\n"
-+	"				lit = sum / 9.0;\n"
++	"				for (int i = 0; i < 12; i++) {\n"
++	"					if (i >= taps) break;\n"
++	"					vec2 o = vec2(pd[i].x * ca - pd[i].y * sa, pd[i].x * sa + pd[i].y * ca) * (2.2 * texel);\n"
++	"					sum += texture(uShadowMap, vec4(sc.xy + o, float(casc), sc.z - uShadowBias));\n"
++	"				}\n"
++	"				lit = sum / float(taps);\n"
 +	"			}\n"
 +	"			outc.rgb *= mix(uShadowStrength, 1.0, lit);\n"
 +	"			if (uShadowDebug == 1) outc.rgb = (casc == 0) ? vec3(1.0, 0.0, 0.0) : ((casc == 1) ? vec3(0.0, 1.0, 0.0) : ((casc == 2) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 1.0)));\n"
 +	"			if (uShadowDebug == 2) outc.rgb = vec3(lit);\n"
++	"		}\n"
++	"		if ((uLightN > 0 || uWet > 0.0) && uPass != 1 && v_is3D > 0.5) {\n"
++	"			vec3 Wp = v_shadowPos.xyz;\n"
++	"			vec3 V = normalize(-Wp);\n"
++	"			vec3 N = normalize(cross(dFdx(Wp), dFdy(Wp)));\n"
++	"			if (dot(N, -Wp) < 0.0) N = -N;\n"
++	"			vec3 acc = vec3(0.0);\n"
++	"			vec3 spec = vec3(0.0);\n"
++	"			for (int i = 0; i < 16; i++) {\n"
++	"				if (i >= uLightN) break;\n"
++	"				vec3 Lv = uLightA[i].xyz - Wp;\n"
++	"				float d = length(Lv);\n"
++	"				float rad = uLightA[i].w;\n"
++	"				if (d < rad) {\n"
++	"					vec3 Ld = Lv / d;\n"
++	"					float att = 1.0 - d / rad;\n"
++	"					att *= att;\n"
++	"					float ndl = max(dot(N, Ld), 0.0) * 0.8 + 0.2;\n"
++	"					float spot = 1.0;\n"
++	"					if (uLightC[i].w > 0.5) spot = smoothstep(uLightB[i].w, uLightB[i].w + 0.12, dot(-Ld, uLightC[i].xyz));\n"
++	"					float sh = 1.0;\n"
++	"					if (uLightC[i].w > 1.5 && spot > 0.0) {\n"
++	"						int k = int(uLightC[i].w - 1.5);\n"
++	"						vec4 slp = uSpotVP[k] * vec4(Wp, 1.0);\n"
++	"						vec3 st = slp.xyz / slp.w * 0.5 + 0.5;\n"
++	"						if (slp.w > 0.0 && st.x > 0.0 && st.x < 1.0 && st.y > 0.0 && st.y < 1.0 && st.z < 1.0) {\n"
++	"							float tx = 1.0 / 1024.0;\n"
++	"							float ssum = 0.0;\n"
++	"							for (int dx = -1; dx <= 1; dx++)\n"
++	"								for (int dy = -1; dy <= 1; dy++)\n"
++	"									ssum += texture(uSpotMap, vec4(st.xy + vec2(float(dx), float(dy)) * tx, float(k), st.z - 0.0015));\n"
++	"							sh = ssum / 9.0;\n"
++	"						}\n"
++	"					}\n"
++	"					acc += uLightB[i].rgb * (att * ndl * spot * sh);\n"
++	"					vec3 Hh = normalize(Ld + V);\n"
++	"					spec += uLightB[i].rgb * (att * spot * sh * pow(max(dot(N, Hh), 0.0), 90.0));\n"
++	"				}\n"
++	"			}\n"
++	"			float wet = (N.y < -0.8) ? uWet : 0.0;\n"
++	"			outc.rgb *= 1.0 - 0.3 * wet;\n"
++	"			outc.rgb += color.rgb * acc * uLightStrength;\n"
++	"			outc.rgb += spec * (wet * uLightStrength * 3.0);\n"
++	"			float fr = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0) * wet;\n"
++	"			outc.rgb += vec3(uFogR, uFogG, uFogB) * (fr * 0.7);\n"
 +	"		}\n"
 +	"		if (uFogOn == 1 && uPass != 1 && v_is3D > 0.5 && v_fogDepth < 2000.0) {\n"
 +	"			float fogF = clamp((v_fogDepth - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);\n"
@@ -1251,7 +1630,15 @@ index 9324471..7efa9fc 100644
  #if USE_PGXP
  #	define GTE_PERSPECTIVE_CORRECTION \
  		"	mat4 ofsMat = mat4(\n"\
-@@ -663,6 +800,12 @@ const char* gpu_shader_32_rgba =
+@@ -656,6 +1001,7 @@ const char* gpu_shader_32_rgba =
+ #endif
+ 
+ #define GTE_VERTEX_SHADER \
++	"	invariant gl_Position;\n"\
+ 	"	attribute vec4 a_position;\n"\
+ 	"	attribute vec4 a_texcoord; // uv, color multiplier, dither\n"\
+ 	"	attribute vec4 a_color;\n"\
+@@ -663,6 +1009,13 @@ const char* gpu_shader_32_rgba =
  	"	attribute vec4 a_zw;\n"\
  	"	uniform mat4 Projection;\n"\
  	"	uniform mat4 Projection3D;\n"\
@@ -1260,26 +1647,28 @@ index 9324471..7efa9fc 100644
 +	"	uniform float uDispH;\n"\
 +	"	uniform mat4 uLightVP[3];\n"\
 +	"	uniform int uCascade;\n"\
++	"	uniform mat4 uSpotVP[3];\n"\
 +	"	uniform int uPass;\n"\
  	"	const vec2 c_UVFudge = vec2(0.00025, 0.00025);\n"\
  	"	void main() {\n"\
  	"		v_texcoord = a_texcoord;\n"\
-@@ -677,6 +820,14 @@ const char* gpu_shader_32_rgba =
+@@ -677,6 +1030,15 @@ const char* gpu_shader_32_rgba =
  	"		v_page_clut.zw += c_UVFudge;\n"\
  	GTE_PERSPECTIVE_CORRECTION\
  	"		v_z = (gl_Position.z - 40.0) * 0.005;\n"\
 +	"		v_is3D = (a_zw.y > 100.0) ? 1.0 : 0.0;\n"\
 +	"		v_fogDepth = a_zw.x;\n"\
++	"		v_hdKey = float(int(a_position.z + 0.5) & 31);\n"\
 +	"		v_shadowPos = vec4(0.0);\n"\
 +	"		if (v_is3D > 0.5) {\n"\
 +	"			vec3 vview = vec3((a_position.x + 0.5) * uDispW, (a_position.y + 0.5) * uDispH, a_zw.x) * 128.0;\n"\
 +	"			v_shadowPos = vec4(uViewToWorld * vview, 1.0);\n"\
 +	"		}\n"\
-+	"		if (uPass == 1) gl_Position = (v_is3D > 0.5) ? (uLightVP[uCascade] * v_shadowPos) : vec4(2.0, 2.0, 2.0, 1.0);\n"\
++	"		if (uPass == 1) gl_Position = (v_is3D > 0.5) ? (((uCascade < 3) ? uLightVP[uCascade] : uSpotVP[uCascade - 3]) * v_shadowPos) : vec4(2.0, 2.0, 2.0, 1.0);\n"\
  	"	}\n"
  
  int GR_Shader_CheckShaderStatus(GLuint shader)
-@@ -690,6 +841,7 @@ int GR_Shader_CheckShaderStatus(GLuint shader)
+@@ -690,6 +1052,7 @@ int GR_Shader_CheckShaderStatus(GLuint shader)
  		return 1;
  	
  	glGetShaderInfoLog(shader, sizeof(info), NULL, info);
@@ -1287,7 +1676,7 @@ index 9324471..7efa9fc 100644
  	if (info[0] && strlen(info) > 8)
  	{
  		eprinterr("%s\n", info);
-@@ -710,6 +862,7 @@ int GR_Shader_CheckProgramStatus(GLuint program)
+@@ -710,6 +1073,7 @@ int GR_Shader_CheckProgramStatus(GLuint program)
  		return 1;
  
  	glGetProgramInfoLog(program, sizeof(info), NULL, info);
@@ -1295,7 +1684,7 @@ index 9324471..7efa9fc 100644
  	if (info[0] && strlen(info) > 8)
  	{
  		eprinterr("%s\n", info);
-@@ -825,7 +978,9 @@ ShaderID GR_Shader_Compile(const char* source, int isPsxShader)
+@@ -825,7 +1189,9 @@ ShaderID GR_Shader_Compile(const char* source, int isPsxShader)
  			eprinterr("Failed to compile Vertex Shader!\n");
  	
  		glAttachShader(program, vertexShader);
@@ -1305,7 +1694,7 @@ index 9324471..7efa9fc 100644
  	}
  
  	{
-@@ -837,7 +992,9 @@ ShaderID GR_Shader_Compile(const char* source, int isPsxShader)
+@@ -837,7 +1203,9 @@ ShaderID GR_Shader_Compile(const char* source, int isPsxShader)
  			eprinterr("Failed to compile Fragment Shader!\n");
  	
  		glAttachShader(program, fragmentShader);
@@ -1315,7 +1704,7 @@ index 9324471..7efa9fc 100644
  	}
  
  	glBindAttribLocation(program, a_position, "a_position");
-@@ -853,10 +1010,17 @@ ShaderID GR_Shader_Compile(const char* source, int isPsxShader)
+@@ -853,10 +1221,17 @@ ShaderID GR_Shader_Compile(const char* source, int isPsxShader)
  		eprinterr("Failed to link Shader!\n");
  
  	GLint sampler = 0;
@@ -1333,7 +1722,7 @@ index 9324471..7efa9fc 100644
  
  	return program;
  }
-@@ -934,10 +1098,16 @@ void GR_CompilePSXShader(PSXGPU_Shader* sh, const char* source)
+@@ -934,10 +1309,16 @@ void GR_CompilePSXShader(PSXGPU_Shader* sh, const char* source)
  
  void GR_InitialisePSXShaders()
  {
@@ -1350,7 +1739,7 @@ index 9324471..7efa9fc 100644
  }
  
  void GR_InitRG8LUT()
-@@ -959,10 +1129,40 @@ void GR_InitRG8LUT()
+@@ -959,10 +1340,69 @@ void GR_InitRG8LUT()
  
  int GR_InitialisePSX()
  {
@@ -1377,7 +1766,36 @@ index 9324471..7efa9fc 100644
 +	glGenFramebuffers(1, &g_screenFBO);
 +	glBindFramebuffer(GL_FRAMEBUFFER, g_screenFBO);
 +	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_screenColorTex, 0);
-+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_screenDepthRB);
++	// depth + stencil as a texture so that the present pass can read the depth (ambient occlusion); falls back to a renderbuffer
++	glGenTextures(1, &g_screenDepthTex);
++	glBindTexture(GL_TEXTURE_2D, g_screenDepthTex);
++	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, g_windowWidth, g_windowHeight, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++	glBindTexture(GL_TEXTURE_2D, 0);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, g_screenDepthTex, 0);
++	g_ps5SSAOok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
++	// low resolution target of the bloom (1/8 of the screen)
++	g_bloomW = g_windowWidth / 8; g_bloomH = g_windowHeight / 8;
++	glGenTextures(1, &g_bloomTex);
++	glBindTexture(GL_TEXTURE_2D, g_bloomTex);
++	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_bloomW, g_bloomH, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++	glBindTexture(GL_TEXTURE_2D, 0);
++	glGenFramebuffers(1, &g_bloomFBO);
++	glBindFramebuffer(GL_FRAMEBUFFER, g_bloomFBO);
++	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_bloomTex, 0);
++	glBindFramebuffer(GL_FRAMEBUFFER, g_screenFBO);
++	if (!g_ps5SSAOok)
++	{
++		eprintf("screen FBO: depth texture not usable, ambient occlusion disabled\n");
++		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_screenDepthRB);
++	}
 +	{ GLint db = 0, sb = 0; glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &db); glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &sb); eprintf("screen FBO depth bits=%d stencil bits=%d\n", db, sb); }
 +	eprintf("screen FBO %dx%d (surface %dx%d) status 0x%x\n", g_windowWidth, g_windowHeight, g_surfaceW, g_surfaceH, glCheckFramebufferStatus(GL_FRAMEBUFFER));
 +#endif
@@ -1391,7 +1809,7 @@ index 9324471..7efa9fc 100644
  
  #if USE_OPENGL
  	glDepthFunc(GL_LEQUAL);
-@@ -997,7 +1197,7 @@ int GR_InitialisePSX()
+@@ -997,7 +1437,7 @@ int GR_InitialisePSX()
  			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
  			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
  
@@ -1400,7 +1818,7 @@ index 9324471..7efa9fc 100644
  		}
  	}
  
-@@ -1028,12 +1228,11 @@ int GR_InitialisePSX()
+@@ -1028,12 +1468,11 @@ int GR_InitialisePSX()
  			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
  			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
  
@@ -1414,7 +1832,7 @@ index 9324471..7efa9fc 100644
  	{
  		int i;
  
-@@ -1063,7 +1262,7 @@ int GR_InitialisePSX()
+@@ -1063,7 +1502,7 @@ int GR_InitialisePSX()
  			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
  			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
  
@@ -1423,7 +1841,7 @@ index 9324471..7efa9fc 100644
  		}
  	}
  
-@@ -1090,6 +1289,9 @@ int GR_InitialisePSX()
+@@ -1090,6 +1529,9 @@ int GR_InitialisePSX()
  
  	GR_ResetDevice();
  
@@ -1433,7 +1851,7 @@ index 9324471..7efa9fc 100644
  	return 1;
  }
  
-@@ -1243,6 +1445,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
+@@ -1243,6 +1685,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
  	{
  	case TF_4_BIT:
  		GR_SetShader(g_gpu_shader_4.shader);
@@ -1443,7 +1861,7 @@ index 9324471..7efa9fc 100644
  		bilinearFilterLoc = g_gpu_shader_4.bilinearFilterLoc;
  		u_projectionLoc = g_gpu_shader_4.projectionLoc;
  		u_projection3DLoc = g_gpu_shader_4.projection3DLoc;
-@@ -1252,6 +1457,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
+@@ -1252,6 +1697,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
  		break;
  	case TF_8_BIT:
  		GR_SetShader(g_gpu_shader_8.shader);
@@ -1453,7 +1871,7 @@ index 9324471..7efa9fc 100644
  		bilinearFilterLoc = g_gpu_shader_8.bilinearFilterLoc;
  		u_projectionLoc = g_gpu_shader_8.projectionLoc;
  		u_projection3DLoc = g_gpu_shader_8.projection3DLoc;
-@@ -1261,6 +1469,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
+@@ -1261,6 +1709,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
  		break;
  	case TF_16_BIT:
  		GR_SetShader(g_gpu_shader_16.shader);
@@ -1463,7 +1881,7 @@ index 9324471..7efa9fc 100644
  		bilinearFilterLoc = g_gpu_shader_16.bilinearFilterLoc;
  		u_projectionLoc = g_gpu_shader_16.projectionLoc;
  		u_projection3DLoc = g_gpu_shader_16.projection3DLoc;
-@@ -1270,6 +1481,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
+@@ -1270,6 +1721,9 @@ void GR_SetTexture(TextureID texture, TexFormat texFormat)
  		break;
  	case TF_32_BIT_RGBA:
  		GR_SetShader(g_gpu_shader_32_rgba.shader);
@@ -1473,14 +1891,14 @@ index 9324471..7efa9fc 100644
  		bilinearFilterLoc = -1;
  		u_projectionLoc = g_gpu_shader_32_rgba.projectionLoc;
  		u_projection3DLoc = g_gpu_shader_32_rgba.projection3DLoc;
-@@ -1505,8 +1719,16 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
+@@ -1505,8 +1959,16 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
  
  		// these constants below are guessed
  		const float perspectiveFOV = 0.9265f;
 +		#ifdef __PROSPERO__
-+		const float perspectiveZNear = 0.25f;
-+#else
  		const float perspectiveZNear = 0.25f;
++#else
++		const float perspectiveZNear = 0.25f;
 +#endif
 +		#ifdef __PROSPERO__
 +		const float perspectiveZFar = 6000.0f;	// map view goes far beyond the original 128k units
@@ -1490,7 +1908,7 @@ index 9324471..7efa9fc 100644
  
  		const float emuScreenAspect = (float)(g_windowWidth) / (float)(g_windowHeight);
  
-@@ -1564,12 +1786,12 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
+@@ -1564,12 +2026,12 @@ void GR_SetOffscreenState(const RECT16* offscreenRect, int enable)
  								GL_COLOR_BUFFER_BIT, GL_NEAREST);
  
  			// done, unbind
@@ -1506,7 +1924,7 @@ index 9324471..7efa9fc 100644
  		// copy rendering results to VRAM texture
  		{
  			// reat the texture
-@@ -1611,7 +1833,7 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
+@@ -1611,7 +2073,7 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
  	// before drawing set source and target
  	{
  		// setup draw and read framebuffers
@@ -1515,7 +1933,7 @@ index 9324471..7efa9fc 100644
  		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, g_glBlitFramebuffer);
  
  		glBlitFramebuffer(0, 0, g_windowWidth, g_windowHeight, x, y + h, x + w, y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-@@ -1634,12 +1856,12 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
+@@ -1634,12 +2096,12 @@ void GR_StoreFrameBuffer(int x, int y, int w, int h)
  
  		
  		// done, unbind
@@ -1531,7 +1949,7 @@ index 9324471..7efa9fc 100644
  	glFlush();
  #endif
  
-@@ -1706,10 +1928,433 @@ void GR_UpdateVRAM()
+@@ -1706,10 +2168,1025 @@ void GR_UpdateVRAM()
  #endif
  }
  
@@ -1543,6 +1961,8 @@ index 9324471..7efa9fc 100644
 +// splits first (uPass = 1), then the normal pass samples the map (uPass = 2).
 +// ---------------------------------------------------------------------------------------------
 +int g_cfg_ps5Shadows = 0;
++float g_cfg_ps5Wet = 1;
++int g_ps5ModOn = 1;		// the pause menu "HD MOD" switch: 0 = the original look
 +int g_cfg_ps5ShadowSplits = 0;
 +int g_cfg_ps5ShadowSize = 4096;
 +int g_cfg_ps5ShadowDebug = 0;
@@ -1569,6 +1989,225 @@ index 9324471..7efa9fc 100644
 +static PFN_PU1I g_pgl_PU1I = NULL;
 +static PFN_PU1F g_pgl_PU1F = NULL;
 +
++int g_cfg_ps5Lights = 1;
++float g_cfg_ps5LightStrength = 1.0f, g_cfg_ps5LightRadius = 1.0f;
++static GLint u_wet = -1;
++static GLint u_ltN = -1, u_ltStrength = -1, u_ltA = -1, u_ltB = -1, u_ltC = -1;
++typedef void (*PFN_PU4FV)(GLuint, GLint, GLsizei, const GLfloat*);
++static PFN_PU4FV g_pgl_PU4FV = NULL;
++
++// Spot lights with shadows (the first few cars): perspective shadow maps, rendered by the shadow pass.
++static GLuint g_spotTex = 0, g_spotFBO[3] = { 0, 0, 0 };
++static GLint u_spotVP = -1, u_spotMap = -1;
++static int g_spotCount = 0;
++static float g_spotVPm[3][16];
++#define SPOT_MAP_SIZE 1024
++
++static void SpotViewProj(const float* pos, const float* dir, float radius, float* out)
++{
++	float f[3] = { dir[0], dir[1], dir[2] };
++	float up[3] = { 0.0f, -1.0f, 0.0f };
++	if (fabsf(f[1]) > 0.98f) { up[0] = 1.0f; up[1] = 0.0f; }
++	float r[3] = { f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0] };
++	float rl = sqrtf(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
++	for (int i = 0; i < 3; i++) r[i] /= rl;
++	float u[3] = { r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0] };
++	const float n = 60.0f, fa = radius, ft = 1.0f / tanf(0.5f * 1.75f);	// 100 degree field of view
++	// view rows: r, u, -f
++	const float V[16] = {
++		r[0], u[0], -f[0], 0.0f,
++		r[1], u[1], -f[1], 0.0f,
++		r[2], u[2], -f[2], 0.0f,
++		-(r[0] * pos[0] + r[1] * pos[1] + r[2] * pos[2]), -(u[0] * pos[0] + u[1] * pos[1] + u[2] * pos[2]), (f[0] * pos[0] + f[1] * pos[1] + f[2] * pos[2]), 1.0f };
++	const float P[16] = {
++		ft, 0, 0, 0,
++		0, ft, 0, 0,
++		0, 0, (fa + n) / (n - fa), -1.0f,
++		0, 0, 2.0f * fa * n / (n - fa), 0 };
++	for (int c = 0; c < 4; c++)
++		for (int rr = 0; rr < 4; rr++)
++		{
++			float sum = 0.0f;
++			for (int k = 0; k < 4; k++)
++				sum += P[k * 4 + rr] * V[c * 4 + k];
++			out[c * 4 + rr] = sum;
++		}
++}
++
++// uploads the lights nearest to the camera (called before the frame's scene batch is drawn) and prepares the spot shadows
++void GR_PS5_UploadLights()
++{
++	if (!g_cfg_ps5Lights || !g_shadowProg || !g_pgl_PU4FV || !g_pgl_PU1I || !g_pgl_PU1F)
++		return;
++	if (!g_ps5ModOn)
++	{
++		g_spotCount = 0;
++		g_pgl_PU1I(g_shadowProg, u_ltN, 0);
++		return;
++	}
++	float a[64], b[64], c[64];
++	int group[16] = { 0 };
++	memset(a, 0, sizeof(a)); memset(b, 0, sizeof(b)); memset(c, 0, sizeof(c));
++	const int n = PS5_LightsNearest(16, a, b, c, group);
++	for (int i = 0; i < n; i++)
++		a[i * 4 + 3] *= g_cfg_ps5LightRadius;
++
++	// the first three cars (by distance) get a shadow map; their lights share it
++	g_spotCount = 0;
++	if (g_spotTex && g_cfg_ps5Shadows)
++	{
++		int seen[3] = { 0, 0, 0 };
++		for (int i = 0; i < n; i++)
++		{
++			if (group[i] == 0 || c[i * 4 + 3] < 0.5f)
++				continue;
++			int k = -1;
++			for (int j = 0; j < g_spotCount; j++)
++				if (seen[j] == group[i]) k = j;
++			if (k < 0 && g_spotCount < 3)
++			{
++				k = g_spotCount++;
++				seen[k] = group[i];
++				SpotViewProj(&a[i * 4], &c[i * 4], a[i * 4 + 3], g_spotVPm[k]);
++			}
++			if (k >= 0)
++				c[i * 4 + 3] = 2.0f + (float)k;
++		}
++	}
++
++	g_pgl_PU4FV(g_shadowProg, u_ltA, 16, a);
++	g_pgl_PU4FV(g_shadowProg, u_ltB, 16, b);
++	g_pgl_PU4FV(g_shadowProg, u_ltC, 16, c);
++	g_pgl_PU1F(g_shadowProg, u_ltStrength, g_cfg_ps5LightStrength);
++	g_pgl_PU1I(g_shadowProg, u_ltN, n);
++	if (g_spotCount > 0 && g_pgl_PUM4)
++		g_pgl_PUM4(g_shadowProg, u_spotVP, 3, GL_FALSE, &g_spotVPm[0][0]);
++}
++
++int GR_PS5_SpotCount() { return g_spotCount; }
++
++// renders into the spot shadow map k (called between ShadowBegin and ShadowEnd)
++void GR_PS5_SpotCascade(int k)
++{
++	glBindFramebuffer(GL_FRAMEBUFFER, g_spotFBO[k]);
++	glViewport(0, 0, SPOT_MAP_SIZE, SPOT_MAP_SIZE);
++	glClear(GL_DEPTH_BUFFER_BIT);
++	g_pgl_PU1I(g_shadowProg, u_shCascade, 3 + k);
++}
++
++
++// ---- HD texture packs: a texture page of the level (256x256, 4 bit) can be replaced by an upscaled RGBA one ----
++int g_cfg_ps5HD = 1;
++#define HD_PAGE_SIZE	512
++#define HD_LAYERS		32
++static GLuint g_hdTex = 0;
++static GLint u_hdMask = -1, u_hdTexLoc = -1, u_hdHole = -1;
++static float g_hdHole[32][4];
++static int g_hdPageX[32], g_hdPageY[32];
++static unsigned int g_hdMask = 0;
++static int g_hdUserOn = 1;
++static int HDMaskEff() { return (g_ps5ModOn && g_hdUserOn) ? (int)g_hdMask : 0; }
++extern "C" unsigned char* PsyX_LoadPNG(const char* path, int* w, int* h);
++
++static void HDInit()
++{
++	if (g_hdTex || !g_shadowProg || !g_pgl_PU1I)
++		return;
++
++	glGenTextures(1, &g_hdTex);
++	glActiveTexture(GL_TEXTURE4);
++	glBindTexture(GL_TEXTURE_2D_ARRAY, g_hdTex);
++	for (int level = 0; level < 3; level++)
++		glTexImage3D(GL_TEXTURE_2D_ARRAY, level, GL_RGBA8, HD_PAGE_SIZE >> level, HD_PAGE_SIZE >> level, HD_LAYERS, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 2);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++	glTexParameterf(GL_TEXTURE_2D_ARRAY, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, 4.0f);
++	glActiveTexture(GL_TEXTURE0);
++
++	g_pgl_PU1I(g_shadowProg, u_hdTexLoc, 4);
++	g_pgl_PU1I(g_shadowProg, u_hdMask, 0);
++	for (int i = 0; i < 32; i++) { g_hdHole[i][0] = g_hdHole[i][1] = 1e9f; g_hdHole[i][2] = g_hdHole[i][3] = -1e9f; }
++	if (g_pgl_PU4FV) g_pgl_PU4FV(g_shadowProg, u_hdHole, 32, &g_hdHole[0][0]);
++}
++
++// Called when level texture page `page` has just been loaded into the VRAM page at (vx, vy). `city` is the level name
++// (NULL when the pack does not apply, e.g. at night): the HD replacement is looked up in DRIVER2/HD/<city>/PAGE_<n>.png.
++void GR_PS5_HDPageLoaded(const char* city, int vx, int vy, int page)
++{
++	if (!g_cfg_ps5HD)
++		return;
++	HDInit();
++	if (!g_hdTex)
++		return;
++
++	const int key = (vx >> 6) + ((vy >> 8) << 4);
++	if (key < 0 || key >= HD_LAYERS)
++		return;
++	g_hdPageX[key] = vx;
++	g_hdPageY[key] = vy;
++	g_hdHole[key][0] = g_hdHole[key][1] = 1e9f;
++	g_hdHole[key][2] = g_hdHole[key][3] = -1e9f;
++
++	unsigned char* px = NULL;
++	int w = 0, h = 0;
++	if (city)
++	{
++		char path[96];
++		snprintf(path, sizeof(path), "DRIVER2/HD/%s/PAGE_%d.png", city, page);
++		px = PsyX_LoadPNG(path, &w, &h);
++	}
++
++	if (px && w == HD_PAGE_SIZE && h == HD_PAGE_SIZE)
++	{
++		glActiveTexture(GL_TEXTURE4);
++		glBindTexture(GL_TEXTURE_2D_ARRAY, g_hdTex);
++		glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, key, HD_PAGE_SIZE, HD_PAGE_SIZE, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
++		glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
++		glActiveTexture(GL_TEXTURE0);
++		g_hdMask |= 1u << key;
++	}
++	else
++		g_hdMask &= ~(1u << key);
++
++	free(px);
++	g_pgl_PU1I(g_shadowProg, u_hdMask, HDMaskEff());
++	if (g_pgl_PU4FV) g_pgl_PU4FV(g_shadowProg, u_hdHole, 32, &g_hdHole[0][0]);
++}
++
++// Something wrote the VRAM rectangle (x, y, w, h in 16 bit words): where it lands on an HD page the original texels must be
++// used (the game updates some textures at run time: the minimap, animated water...), so the area becomes a hole of the HD page.
++void GR_PS5_HDVramWrite(int x, int y, int w, int h)
++{
++	if (!g_hdMask)
++		return;
++
++	bool changed = false;
++	for (int key = 0; key < HD_LAYERS; key++)
++	{
++		if (!(g_hdMask & (1u << key)))
++			continue;
++		const int px = g_hdPageX[key], py = g_hdPageY[key];
++		if (x >= px + 64 || x + w <= px || y >= py + 256 || y + h <= py)
++			continue;
++		// page-relative texels (4 bit pages: 4 texels per word)
++		const float x0 = (float)((x > px ? x : px) - px) * 4.0f;
++		const float x1 = (float)((x + w < px + 64 ? x + w : px + 64) - px) * 4.0f;
++		const float y0 = (float)((y > py ? y : py) - py);
++		const float y1 = (float)((y + h < py + 256 ? y + h : py + 256) - py);
++		float* hole = g_hdHole[key];
++		if (x0 < hole[0]) { hole[0] = x0; changed = true; }
++		if (y0 < hole[1]) { hole[1] = y0; changed = true; }
++		if (x1 > hole[2]) { hole[2] = x1; changed = true; }
++		if (y1 > hole[3]) { hole[3] = y1; changed = true; }
++	}
++	if (changed && g_pgl_PU4FV)
++		g_pgl_PU4FV(g_shadowProg, u_hdHole, 32, &g_hdHole[0][0]);
++}
++
 +int g_cfg_ps5Fog = 0;
 +int g_cfg_ps5FogStart = 12, g_cfg_ps5FogEnd = 30;	// map cells
 +int g_cfg_ps5FogR = 190, g_cfg_ps5FogG = 205, g_cfg_ps5FogB = 225;
@@ -1579,6 +2218,11 @@ index 9324471..7efa9fc 100644
 +{
 +	if (!g_cfg_ps5Fog || !g_pgl_PU1F || !g_pgl_PU1I || !g_shadowProg)
 +		return;
++	if (!g_ps5ModOn)
++	{
++		g_pgl_PU1I(g_shadowProg, u_fogOn, 0);
++		return;
++	}
 +	const float k[3] = { skyR / 128.0f, skyG / 128.0f, skyB / 128.0f };
 +	const float c[3] = { g_cfg_ps5FogR / 255.0f, g_cfg_ps5FogG / 255.0f, g_cfg_ps5FogB / 255.0f };
 +	float o[3];
@@ -1592,12 +2236,126 @@ index 9324471..7efa9fc 100644
 +	g_pgl_PU1I(g_shadowProg, u_fogOn, 1);
 +}
 +
++// the pause menu switch for the whole PS5 look: HD textures, lights, shadows and fog (the game side handles the 2D effects)
++void GR_PS5_SetModOn(int on)
++{
++	g_ps5ModOn = on;
++	if (g_shadowProg && g_pgl_PU1I)
++	{
++		g_pgl_PU1I(g_shadowProg, u_hdMask, HDMaskEff());
++		if (!on)
++		{
++			g_pgl_PU1I(g_shadowProg, u_fogOn, 0);
++			g_pgl_PU1I(g_shadowProg, u_ltN, 0);
++		}
++	}
++}
++
++// wetness of the roads, 0..1 (the game's rain level)
++void GR_PS5_SetWet(float w)
++{
++	if (!g_shadowProg || !g_pgl_PU1F)
++		return;
++	if (!g_ps5ModOn || !g_cfg_ps5Wet) w = 0.0f;
++	g_pgl_PU1F(g_shadowProg, u_wet, w);
++}
++
++
++// ---- run-time switches of each effect (pause menu: PS5 EFFECTS) ----
++static float g_fxBloomDefault = -1.0f, g_fxSSAODefault = -1.0f;
++void GR_PS5_SetFeature(int id, int on)
++{
++	switch (id)
++	{
++	case 0: if (!on || g_shadowFBO) g_cfg_ps5Shadows = on; break;
++	case 1: g_cfg_ps5Lights = on; if (!on && g_shadowProg && g_pgl_PU1I) g_pgl_PU1I(g_shadowProg, u_ltN, 0); break;
++	case 2: g_hdUserOn = on; if (g_shadowProg && g_pgl_PU1I) g_pgl_PU1I(g_shadowProg, u_hdMask, HDMaskEff()); break;
++	case 3: g_cfg_ps5Fog = on; if (!on && g_shadowProg && g_pgl_PU1I) g_pgl_PU1I(g_shadowProg, u_fogOn, 0); break;
++	case 4: if (g_fxBloomDefault < 0.0f) g_fxBloomDefault = g_cfg_ps5Bloom > 0.0f ? g_cfg_ps5Bloom : 0.45f; g_cfg_ps5Bloom = on ? g_fxBloomDefault : 0.0f; break;
++	case 5: if (g_fxSSAODefault < 0.0f) g_fxSSAODefault = g_cfg_ps5SSAO > 0.0f ? g_cfg_ps5SSAO : 0.6f; g_cfg_ps5SSAO = on ? g_fxSSAODefault : 0.0f; break;
++	case 6: g_cfg_ps5Wet = on ? 1.0f : 0.0f; break;
++	case 7: g_cfg_ps5Prepass = on; break;
++	}
++}
++
++int GR_PS5_GetFeature(int id)
++{
++	switch (id)
++	{
++	case 0: return g_cfg_ps5Shadows != 0;
++	case 1: return g_cfg_ps5Lights != 0;
++	case 2: return g_hdUserOn;
++	case 3: return g_cfg_ps5Fog != 0;
++	case 4: return g_cfg_ps5Bloom > 0.0f;
++	case 5: return g_cfg_ps5SSAO > 0.0f;
++	case 6: return g_cfg_ps5Wet > 0.0f;
++	case 7: return g_cfg_ps5Prepass != 0;
++	}
++	return 0;
++}
++
++void GR_PS5_PerfInfo(float* cpuMs, float* gpuMs)
++{
++	*cpuMs = g_perfCpuMs;
++	*gpuMs = g_perfGpuMs;
++}
++
++
++// ---- depth prepass: the opaque geometry is drawn twice, first depth only with a minimal shader and then in colour only
++// where the depth is equal, so the expensive fragment shader runs once per pixel (the game paints back to front) ----
++int GR_PS5_PrepassUsable()
++{
++	return g_cfg_ps5Prepass && g_ps5ModOn && g_shadowProg && g_pgl_PU1I && u_shPass >= 0;
++}
++
++void GR_PS5_PrepassBegin()
++{
++	g_pgl_PU1I(g_shadowProg, u_shPass, 3);
++	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
++	glDepthMask(GL_TRUE);
++	glDepthFunc(GL_LEQUAL);
++	GR_EnableDepth(1);	// the depth test may have been left off at the end of the previous frame
++}
++
++void GR_PS5_PrepassEnd()
++{
++	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++	g_pgl_PU1I(g_shadowProg, u_shPass, g_ps5PassNow);
++}
++
++// colour draws of a prepassed split: depth must be equal, nothing is written
++void GR_PS5_PrepassColour(int on)
++{
++	if (on)
++	{
++		GR_EnableDepth(1);
++		glDepthFunc(GL_EQUAL);
++		glDepthMask(GL_FALSE);
++	}
++	else
++	{
++		glDepthFunc(GL_LEQUAL);
++		glDepthMask(GL_TRUE);
++	}
++}
++
 +void GR_PS5_InitShadows()
 +{
-+	if (!g_cfg_ps5Shadows && !g_cfg_ps5Fog)
++	if (!g_cfg_ps5Shadows && !g_cfg_ps5Fog && !g_cfg_ps5Lights && !g_cfg_ps5HD)
 +		return;
 +
 +	g_shadowProg = g_gpu_shader_4.shader;
++	u_spotVP = glGetUniformLocation(g_shadowProg, "uSpotVP");
++	u_spotMap = glGetUniformLocation(g_shadowProg, "uSpotMap");
++	u_hdMask = glGetUniformLocation(g_shadowProg, "uHDMask");
++	u_hdHole = glGetUniformLocation(g_shadowProg, "uHDHole");
++	u_hdTexLoc = glGetUniformLocation(g_shadowProg, "uHDTex");
++	u_wet = glGetUniformLocation(g_shadowProg, "uWet");
++	u_ltN = glGetUniformLocation(g_shadowProg, "uLightN");
++	u_ltStrength = glGetUniformLocation(g_shadowProg, "uLightStrength");
++	u_ltA = glGetUniformLocation(g_shadowProg, "uLightA");
++	u_ltB = glGetUniformLocation(g_shadowProg, "uLightB");
++	u_ltC = glGetUniformLocation(g_shadowProg, "uLightC");
 +	u_fogOn = glGetUniformLocation(g_shadowProg, "uFogOn");
 +	u_fogR = glGetUniformLocation(g_shadowProg, "uFogR");
 +	u_fogG = glGetUniformLocation(g_shadowProg, "uFogG");
@@ -1621,6 +2379,15 @@ index 9324471..7efa9fc 100644
 +	g_pgl_PUM4 = (PFN_PUM)PS5_GetProcAddress("glProgramUniformMatrix4fv");
 +	g_pgl_PU1I = (PFN_PU1I)PS5_GetProcAddress("glProgramUniform1i");
 +	g_pgl_PU1F = (PFN_PU1F)PS5_GetProcAddress("glProgramUniform1f");
++	g_pgl_PU4FV = (PFN_PU4FV)PS5_GetProcAddress("glProgramUniform4fv");
++
++	// array samplers must not share a texture unit with the 2D sampler, whatever is enabled
++	if (g_pgl_PU1I)
++	{
++		g_pgl_PU1I(g_shadowProg, u_shMap, 2);
++		g_pgl_PU1I(g_shadowProg, u_spotMap, 3);
++		g_pgl_PU1I(g_shadowProg, u_hdTexLoc, 4);
++	}
 +
 +	if (!g_cfg_ps5Shadows)
 +		return;
@@ -1655,6 +2422,32 @@ index 9324471..7efa9fc 100644
 +	}
 +	g_shadowFBO = g_shadowCascadeFBO[0];
 +	glBindFramebuffer(GL_FRAMEBUFFER, g_screenFBO);
++
++	// spot light shadow maps (3 layers)
++	glGenTextures(1, &g_spotTex);
++	glBindTexture(GL_TEXTURE_2D_ARRAY, g_spotTex);
++	glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24, SPOT_MAP_SIZE, SPOT_MAP_SIZE, 3, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
++	glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
++	glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
++	for (int c = 0; c < 3; c++)
++	{
++		glGenFramebuffers(1, &g_spotFBO[c]);
++		glBindFramebuffer(GL_FRAMEBUFFER, g_spotFBO[c]);
++		glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, g_spotTex, 0, c);
++		glDrawBuffer(GL_NONE);
++		glReadBuffer(GL_NONE);
++		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
++		{
++			eprintf("spot shadows: incomplete framebuffer, disabled\n");
++			g_spotTex = 0;
++		}
++	}
++	glBindFramebuffer(GL_FRAMEBUFFER, g_screenFBO);
 +	eprintf("shadows: map %dx%d, fbo status 0x%x, uniforms v2w=%d lvp=%d pass=%d map=%d\n", S, S, st, u_shViewToWorld, u_shLightVP, u_shPass, u_shMap);
 +
 +	if (st != GL_FRAMEBUFFER_COMPLETE || !g_pgl_PU1I || !g_pgl_PUM3 || !g_pgl_PUM4 || !g_pgl_PU1F)
@@ -1665,6 +2458,7 @@ index 9324471..7efa9fc 100644
 +	}
 +
 +	g_pgl_PU1I(g_shadowProg, u_shMap, 2);
++	g_pgl_PU1I(g_shadowProg, u_spotMap, 3);
 +	g_pgl_PU1F(g_shadowProg, u_shSize, (float)S);
 +	g_pgl_PU1F(g_shadowProg, u_shStrength, g_cfg_ps5ShadowStrength);
 +	g_pgl_PU1F(g_shadowProg, u_shBias, 0.0008f);
@@ -1774,9 +2568,10 @@ index 9324471..7efa9fc 100644
 +
 +int GR_PS5_ShadowBegin()
 +{
-+	if (!g_cfg_ps5Shadows || !g_shValid || !g_shadowFBO)
++	if (!g_cfg_ps5Shadows || !g_shValid || !g_shadowFBO || !g_ps5ModOn)
 +		return 0;
 +
++	GR_PS5_PerfMark(1);
 +	g_shValid = 0;
 +	g_shDumpPending = (g_cfg_ps5ShadowDebug == 5 && ++g_shPassCounter % 300 == 150);
 +
@@ -1816,6 +2611,11 @@ index 9324471..7efa9fc 100644
 +
 +	glActiveTexture(GL_TEXTURE2);
 +	glBindTexture(GL_TEXTURE_2D_ARRAY, g_shadowTex);
++	if (g_spotTex)
++	{
++		glActiveTexture(GL_TEXTURE3);
++		glBindTexture(GL_TEXTURE_2D_ARRAY, g_spotTex);
++	}
 +
 +	// debug: every 120 passes report how full each cascade is
 +	if (g_cfg_ps5ShadowDebug == 5)
@@ -1847,7 +2647,9 @@ index 9324471..7efa9fc 100644
 +
 +	glActiveTexture(GL_TEXTURE0);
 +
++	g_ps5PassNow = 2;
 +	g_pgl_PU1I(g_shadowProg, u_shPass, 2);
++	GR_PS5_PerfMark(2);
 +}
 +
 +int GR_PS5_ShadowDumpPending() { return g_shDumpPending; }
@@ -1887,7 +2689,7 @@ index 9324471..7efa9fc 100644
 +void GR_PS5_ShadowFinish()
 +{
 +	if (g_cfg_ps5Shadows && g_shadowFBO)
-+		g_pgl_PU1I(g_shadowProg, u_shPass, 0);
++		g_ps5PassNow = 0, g_pgl_PU1I(g_shadowProg, u_shPass, 0);
 +}
 +#endif
 +
@@ -1904,12 +2706,58 @@ index 9324471..7efa9fc 100644
 +	"	}\n"
 +	"#else\n"
 +	"	uniform sampler2D s_texture;\n"
++	"	uniform sampler2D s_depth;\n"
++	"	uniform float uBloom;\n"
++	"	uniform float uBloomThr;\n"
++	"	uniform float uAO;\n"
++	"	uniform vec2 uPixel;\n"
++	"	uniform sampler2D s_bloom;\n"
++	"	uniform int uMode;\n"
++	"	uniform vec2 uBloomPixel;\n"
++	"	float linZ(float d) { return 2.0 * 6000.0 * 0.25 / (6000.25 - (2.0 * d - 1.0) * 5999.75); }\n"
 +	"	void main() {\n"
-+	"		fragColor = texture2D(s_texture, v_texcoord.xy);\n"
++	"		vec2 uv = v_texcoord.xy;\n"
++	"		if (uMode == 1) {\n"
++	"			vec3 acc = vec3(0.0);\n"
++	"			for (int y = 0; y < 4; y++)\n"
++	"				for (int x = 0; x < 4; x++) {\n"
++	"					vec2 o = (vec2(float(x), float(y)) - 1.5) * 2.0 * uPixel;\n"
++	"					acc += max(textureLod(s_texture, uv + o, 0.0).rgb - uBloomThr, 0.0);\n"
++	"				}\n"
++	"			fragColor = vec4(acc / 16.0, 1.0);\n"
++	"			return;\n"
++	"		}\n"
++	"		vec3 col = textureLod(s_texture, uv, 0.0).rgb;\n"
++	"		if (uAO > 0.0) {\n"
++	"			float d0 = texture(s_depth, uv).r;\n"
++	"			if (d0 < 0.99999) {\n"
++	"				float z0 = linZ(d0);\n"
++	"				float rw = 1.2;\n"
++	"				float rpx = clamp(rw * 1.0 / z0 * 0.5 / uPixel.y * 0.4, 2.0, 40.0);\n"
++	"				float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
++	"				float occ = 0.0;\n"
++	"				for (int i = 0; i < 12; i++) {\n"
++	"					float a = (float(i) + ign) * 2.3999632;\n"
++	"					float r = (float(i) + 0.5) / 12.0;\n"
++	"					vec2 o = vec2(cos(a), sin(a)) * (r * rpx) * uPixel;\n"
++	"					float ds = texture(s_depth, uv + o).r;\n"
++	"					float dz = z0 - linZ(ds);\n"
++	"					occ += clamp(dz / (0.05 + 0.02 * z0), 0.0, 1.0) * (1.0 - clamp(dz / (2.5 * rw), 0.0, 1.0));\n"
++	"				}\n"
++	"				col *= 1.0 - uAO * occ / 12.0;\n"
++	"			}\n"
++	"		}\n"
++	"		if (uBloom > 0.0) {\n"
++	"			vec3 b = texture(s_bloom, uv).rgb * 0.30;\n"
++	"			b += (texture(s_bloom, uv + vec2(uBloomPixel.x, 0.0) * 1.3).rgb + texture(s_bloom, uv - vec2(uBloomPixel.x, 0.0) * 1.3).rgb + texture(s_bloom, uv + vec2(0.0, uBloomPixel.y) * 1.3).rgb + texture(s_bloom, uv - vec2(0.0, uBloomPixel.y) * 1.3).rgb) * 0.10;\n"
++	"			b += (texture(s_bloom, uv + uBloomPixel * 2.6).rgb + texture(s_bloom, uv - uBloomPixel * 2.6).rgb + texture(s_bloom, uv + vec2(uBloomPixel.x, -uBloomPixel.y) * 2.6).rgb + texture(s_bloom, uv + vec2(-uBloomPixel.x, uBloomPixel.y) * 2.6).rgb) * 0.075;\n"
++	"			col += b * (uBloom * 2.0);\n"
++	"		}\n"
++	"		fragColor = vec4(col, 1.0);\n"
 +	"	}\n"
 +	"#endif\n";
 +static ShaderID g_ps5PresentShader = 0;
-+static GLint g_ps5PresentTexLoc = -1;
++static GLint g_ps5PresentTexLoc = -1, g_ps5DepthLoc = -1, g_ps5BloomLoc = -1, g_ps5BloomThrLoc = -1, g_ps5AOLoc = -1, g_ps5PixelLoc = -1, g_ps5BloomTexLoc = -1, g_ps5ModeLoc = -1, g_ps5BloomPixelLoc = -1;
 +
 +ShaderID GR_PS5_PresentShader()
 +{
@@ -1917,20 +2765,153 @@ index 9324471..7efa9fc 100644
 +	{
 +		g_ps5PresentShader = GR_Shader_Compile(ps5_present_shader, false);
 +		g_ps5PresentTexLoc = glGetUniformLocation(g_ps5PresentShader, "s_texture");
++		g_ps5DepthLoc = glGetUniformLocation(g_ps5PresentShader, "s_depth");
++		g_ps5BloomLoc = glGetUniformLocation(g_ps5PresentShader, "uBloom");
++		g_ps5BloomThrLoc = glGetUniformLocation(g_ps5PresentShader, "uBloomThr");
++		g_ps5AOLoc = glGetUniformLocation(g_ps5PresentShader, "uAO");
++		g_ps5PixelLoc = glGetUniformLocation(g_ps5PresentShader, "uPixel");
++		g_ps5BloomTexLoc = glGetUniformLocation(g_ps5PresentShader, "s_bloom");
++		g_ps5ModeLoc = glGetUniformLocation(g_ps5PresentShader, "uMode");
++		g_ps5BloomPixelLoc = glGetUniformLocation(g_ps5PresentShader, "uBloomPixel");
 +	}
 +	return g_ps5PresentShader;
 +}
 +GLint GR_PS5_PresentTexLoc() { GR_PS5_PresentShader(); return g_ps5PresentTexLoc; }
 +
++
++// ---- frame profiler (GPU timestamps + CPU timers), logged once a second ----
++typedef void (*PFN_QCOUNTER)(GLuint, GLenum);
++typedef void (*PFN_QGET64)(GLuint, GLenum, unsigned long long*);
++static PFN_QCOUNTER g_pglQueryCounter = NULL;
++static PFN_QGET64 g_pglGetQuery64 = NULL;
++#define PERF_MARKS 6
++static GLuint g_perfQ[2][PERF_MARKS];
++static int g_perfMarked[2][PERF_MARKS];
++static int g_perfRing = 0, g_perfInit = 0;
++static double g_perfAcc[PERF_MARKS], g_perfCpuAcc = 0, g_perfWaitAcc = 0, g_perfLastLog = 0;
++static int g_perfFrames = 0, g_perfPrevValid = 0, g_perfFramesLast = 1;
++static double g_perfCpu[4] = { 0, 0, 0, 0 };
++void GR_PS5_PerfCpu(int which, double ms) { if (which >= 0 && which < 4) g_perfCpu[which] += ms; }
++float g_perfGpuMs = 0, g_perfCpuMs = 0;		// last second's averages, shown by the FPS counter
++extern double PsyX_NowMs();
++
++// marks: 0 start of the frame, 1 before the shadow pass, 2 after it, 3 before the present pass, 4 after it
++void GR_PS5_PerfMark(int i)
++{
++	if (!g_perfInit)
++	{
++		g_pglQueryCounter = (PFN_QCOUNTER)PS5_GetProcAddress("glQueryCounter");
++		g_pglGetQuery64 = (PFN_QGET64)PS5_GetProcAddress("glGetQueryObjectui64v");
++		if (g_pglQueryCounter && g_pglGetQuery64)
++		{
++			glGenQueries(2 * PERF_MARKS, &g_perfQ[0][0]);
++			g_perfInit = 1;
++		}
++		else
++			g_perfInit = -1;
++	}
++	if (g_perfInit < 0)
++		return;
++	g_pglQueryCounter(g_perfQ[g_perfRing][i], 0x8E28 /* GL_TIMESTAMP */);
++	g_perfMarked[g_perfRing][i] = 1;
++}
++
++// end of frame: read the timestamps of the previous frame, accumulate and log
++static void GR_PS5_PerfEndFrame(double cpuMs, double waitMs)
++{
++	if (g_perfInit <= 0)
++		return;
++	const int prev = g_perfRing ^ 1;
++	if (g_perfPrevValid)
++	{
++		unsigned long long t[PERF_MARKS] = { 0 };
++		for (int i = 0; i < PERF_MARKS; i++)
++			if (g_perfMarked[prev][i])
++				g_pglGetQuery64(g_perfQ[prev][i], 0x8866 /* GL_QUERY_RESULT */, &t[i]);
++		// phases: scene before shadows, shadows, scene after shadows + present
++		const double scene = (g_perfMarked[prev][1] ? (double)(t[1] - t[0]) : 0.0) / 1e6;
++		const double shadow = (g_perfMarked[prev][1] && g_perfMarked[prev][2] ? (double)(t[2] - t[1]) : 0.0) / 1e6;
++		const double post = (g_perfMarked[prev][3] && g_perfMarked[prev][4] ? (double)(t[4] - t[3]) : 0.0) / 1e6;
++		const double total = g_perfMarked[prev][4] ? (double)(t[4] - t[0]) / 1e6 : 0.0;
++		g_perfAcc[0] += total; g_perfAcc[1] += scene; g_perfAcc[2] += shadow; g_perfAcc[3] += post;
++	}
++	g_perfCpuAcc += cpuMs; g_perfWaitAcc += waitMs;
++	g_perfFrames++;
++	g_perfPrevValid = 1;
++	for (int i = 0; i < PERF_MARKS; i++) g_perfMarked[g_perfRing][i] = g_perfMarked[g_perfRing][i];
++	g_perfRing ^= 1;
++	for (int i = 0; i < PERF_MARKS; i++) g_perfMarked[g_perfRing][i] = 0;
++
++	const double now = PsyX_NowMs();
++	if (now - g_perfLastLog >= 1000.0 && g_perfFrames > 0)
++	{
++		const double f = 1.0 / g_perfFrames;
++		g_perfFramesLast = g_perfFrames;
++		g_perfGpuMs = (float)(g_perfAcc[0] * f);
++		g_perfCpuMs = (float)(g_perfCpuAcc * f);
++		eprintf("perf: %d frames | gpu total %.1f ms (scene-start %.1f shadow %.1f present %.1f) | cpu busy %.1f ms, swap wait %.1f ms | cpu: logic %.1f build+draw %.1f of which DrawAllSplits %.1f, shadow pass %.1f\n",
++			g_perfFrames, g_perfAcc[0] * f, g_perfAcc[1] * f, g_perfAcc[2] * f, g_perfAcc[3] * f, g_perfCpuAcc * f, g_perfWaitAcc * f,
++			g_perfCpu[0] * f, g_perfCpu[1] * f, g_perfCpu[2] * f, g_perfCpu[3] * f);
++		for (int i = 0; i < 4; i++) g_perfCpu[i] = 0;
++		{
++			// the OpenGL calls that cost the most CPU time this second
++			struct { int i; unsigned long long ns; } top[sizeof(g_glprofNames) / sizeof(g_glprofNames[0])];
++			const int n = (int)(sizeof(g_glprofNames) / sizeof(g_glprofNames[0]));
++			for (int i = 0; i < n; i++) { top[i].i = i; top[i].ns = g_glprof[i].ns; }
++			for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) if (top[b].ns > top[a].ns) { auto t = top[a]; top[a] = top[b]; top[b] = t; }
++			char line[900]; int len = 0;
++			len += snprintf(line + len, sizeof(line) - len, "gl/frame:");
++			for (int k = 0; k < 12 && top[k].ns > 0; k++)
++			{
++				const GlProf& g = g_glprof[top[k].i];
++				len += snprintf(line + len, sizeof(line) - len, " %s %u calls %.2f ms (%.0f us each);", g_glprofNames[top[k].i], (unsigned)(g.count / g_perfFramesLast), g.ns / 1e6 / g_perfFramesLast, g.count ? g.ns / 1e3 / g.count : 0.0);
++			}
++			eprintf("%s\n", line);
++			{
++				static const char* const bn[4] = { "<100", "<1000", "<10000", ">=10000" };
++				char bl[400]; int bl_len = snprintf(bl, sizeof(bl), "draws/frame by vertices:");
++				unsigned long long tv = 0; for (int b = 0; b < 4; b++) tv += g_drawBuckets[b].verts;
++				for (int b = 0; b < 4; b++)
++					bl_len += snprintf(bl + bl_len, sizeof(bl) - bl_len, " %s: %u calls %.2f ms %.0fk verts;", bn[b], (unsigned)(g_drawBuckets[b].calls / g_perfFramesLast), g_drawBuckets[b].ns / 1e6 / g_perfFramesLast, g_drawBuckets[b].verts / 1000.0 / g_perfFramesLast);
++				bl_len += snprintf(bl + bl_len, sizeof(bl) - bl_len, " total %.0fk verts/frame", tv / 1000.0 / g_perfFramesLast);
++				eprintf("%s\n", bl);
++				memset(g_drawBuckets, 0, sizeof(g_drawBuckets));
++			}
++			for (int i = 0; i < n; i++) { g_glprof[i].ns = 0; g_glprof[i].count = 0; }
++		}
++		for (int i = 0; i < PERF_MARKS; i++) g_perfAcc[i] = 0;
++		g_perfCpuAcc = g_perfWaitAcc = 0;
++		g_perfFrames = 0;
++		g_perfLastLog = now;
++	}
++}
++
 +static void GR_PS5_Present()
 +{
++	GR_PS5_PerfMark(3);
 +	GR_PS5_PresentShader();
 +	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 +	GR_SetViewPort(0, 0, g_surfaceW, g_surfaceH);
 +	GR_SetShader(g_ps5PresentShader);
 +	glUniform1i(g_ps5PresentTexLoc, 0);
++	glUniform1i(g_ps5DepthLoc, 1);
 +	glActiveTexture(GL_TEXTURE0);
 +	glBindTexture(GL_TEXTURE_2D, g_screenColorTex);
++	const float bloom = g_ps5ModOn ? g_cfg_ps5Bloom : 0.0f;
++	const float ao = (g_ps5ModOn && g_ps5SSAOok) ? g_cfg_ps5SSAO : 0.0f;
++	if (ao > 0.0f)
++	{
++		glActiveTexture(GL_TEXTURE1);
++		glBindTexture(GL_TEXTURE_2D, g_screenDepthTex);
++		glActiveTexture(GL_TEXTURE0);
++	}
++	glUniform1f(g_ps5BloomLoc, bloom);
++	glUniform1f(g_ps5BloomThrLoc, 0.8f);
++	glUniform1f(g_ps5AOLoc, ao);
++	glUniform2f(g_ps5PixelLoc, 1.0f / (float)g_windowWidth, 1.0f / (float)g_windowHeight);
++	glUniform2f(g_ps5BloomPixelLoc, 1.0f / (float)g_bloomW, 1.0f / (float)g_bloomH);
++	glUniform1i(g_ps5BloomTexLoc, 5);
++	glUniform1i(g_ps5ModeLoc, 0);
 +	g_lastBoundTexture = 0;
 +	GR_SetScissorState(0);
 +	GR_SetStencilMode(0);
@@ -1947,7 +2928,28 @@ index 9324471..7efa9fc 100644
 +		v[i].u = uv[i][0]; v[i].v = uv[i][1];
 +	}
 +	GR_UpdateVertexBuffer(v, 6);
++
++	if (bloom > 0.0f)
++	{
++		// bright parts of the scene averaged into a small texture (the glow is read from it below)
++		glBindFramebuffer(GL_FRAMEBUFFER, g_bloomFBO);
++		glViewport(0, 0, g_bloomW, g_bloomH);
++		glUniform1i(g_ps5ModeLoc, 1);
++		GR_DrawTriangles(0, 2);
++		glUniform1i(g_ps5ModeLoc, 0);
++		glBindFramebuffer(GL_FRAMEBUFFER, 0);
++		GR_SetViewPort(0, 0, g_surfaceW, g_surfaceH);
++		glActiveTexture(GL_TEXTURE5);
++		glBindTexture(GL_TEXTURE_2D, g_bloomTex);
++		glActiveTexture(GL_TEXTURE0);
++	}
++
 +	GR_DrawTriangles(0, 2);
++
++	// the shader is shared with the FMV player: leave the effects off for it
++	glUniform1f(g_ps5BloomLoc, 0.0f);
++	glUniform1f(g_ps5AOLoc, 0.0f);
++	GR_PS5_PerfMark(4);
 +}
 +#endif
 +
@@ -1956,16 +2958,24 @@ index 9324471..7efa9fc 100644
  #if defined(RENDERER_OGL) || defined(RENDERER_OGLES)
 +#ifdef __PROSPERO__
 +	// present: draw our FBO texture to the swapchain buffer (glBlitFramebuffer on it is very slow here)
++	static double lastSwapEnd = 0.0;
++	const double beforePresent = PsyX_NowMs();
 +	GR_PS5_Present();
++	const double beforeSwap = PsyX_NowMs();
 +	PS5_SwapBuffers();
++	const double afterSwap = PsyX_NowMs();
++	GR_PS5_PerfEndFrame(lastSwapEnd > 0.0 ? beforeSwap - lastSwapEnd : 0.0, afterSwap - beforeSwap);
++	lastSwapEnd = afterSwap;
++	(void)beforePresent;
 +	glBindFramebuffer(GL_FRAMEBUFFER, g_screenFBO);
++	GR_PS5_PerfMark(0);
 +#else
  	SDL_GL_SwapWindow(g_window);
 +#endif
  #endif
  
  	//glFinish();
-@@ -1875,6 +2520,12 @@ void GR_UpdateVertexBuffer(const GrVertex* vertices, int num_vertices)
+@@ -1875,6 +3352,12 @@ void GR_UpdateVertexBuffer(const GrVertex* vertices, int num_vertices)
  #endif
  }
  
@@ -1978,6 +2988,50 @@ index 9324471..7efa9fc 100644
  void GR_DrawTriangles(int start_vertex, int triangles)
  {
  #if USE_OPENGL
+diff --git a/src/render/PsyX_png.cpp b/src/render/PsyX_png.cpp
+new file mode 100644
+index 0000000..6304b4f
+--- /dev/null
++++ b/src/render/PsyX_png.cpp
+@@ -0,0 +1,38 @@
++// PNG loading for the PS5 build (HD texture packs). The video player's copy of stb_image only decodes JPEG,
++// so this one is private to this file.
++#ifdef __PROSPERO__
++#include <stdio.h>
++#include <stdlib.h>
++
++#define STB_IMAGE_IMPLEMENTATION
++#define STB_IMAGE_STATIC
++#define STBI_ONLY_PNG
++#define STBI_NO_STDIO
++#include "stb_image.h"
++
++// returns RGBA8 pixels (free with free()) or NULL
++extern "C" unsigned char* PsyX_LoadPNG(const char* path, int* w, int* h)
++{
++	FILE* f = fopen(path, "rb");
++	if (!f)
++		return NULL;
++
++	fseek(f, 0, SEEK_END);
++	const long size = ftell(f);
++	fseek(f, 0, SEEK_SET);
++
++	unsigned char* buf = (unsigned char*)malloc(size);
++	if (!buf || fread(buf, 1, size, f) != (size_t)size)
++	{
++		free(buf);
++		fclose(f);
++		return NULL;
++	}
++	fclose(f);
++
++	int comp = 0;
++	unsigned char* px = stbi_load_from_memory(buf, (int)size, w, h, &comp, 4);
++	free(buf);
++	return px;
++}
++#endif
 diff --git a/src/render/PsyX_render_ps5.cpp b/src/render/PsyX_render_ps5.cpp
 new file mode 100644
 index 0000000..9faf9f8

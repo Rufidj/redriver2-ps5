@@ -7,3 +7,6 @@ ps5/app/sce_sys/*.png
 ps5/app/sce_sys/*.dds
 scripts/env.sh
 *.log
+vulkan/sce_sys/
+dist/
+*.zip
