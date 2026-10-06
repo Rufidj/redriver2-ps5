@@ -1504,9 +1504,27 @@ index b79a956..799b2f3 100644
  
  	cell_ptrs = (ushort*)D_MALLOC(4096 * sizeof(short));
 diff --git a/src_rebuild/Game/C/mission.c b/src_rebuild/Game/C/mission.c
-index 5b29293..33d5693 100644
+index 5b29293..29164cf 100644
 --- a/src_rebuild/Game/C/mission.c
 +++ b/src_rebuild/Game/C/mission.c
+@@ -101,7 +101,7 @@ GAMETYPE GameType = GAME_MISSION;
+ int gCurrentMissionNumber = 0;
+ 
+ int maxPlayerCars = 1;
+-int maxCivCars = 14;
++int maxCivCars = 24;
+ int maxParkedCars = 7;
+ int maxCopCars = 4;
+ 
+@@ -239,7 +239,7 @@ void InitialiseMissionDefaults(void)
+ 	tannerDeathTimer = 0;
+ 
+ 	maxPlayerCars = 1;
+-	maxCivCars = 14;
++	maxCivCars = 24;
+ 	maxParkedCars = 7;
+ 	maxCopCars = 4;
+ 
 @@ -465,7 +465,7 @@ void LoadMission(int missionnum)
  	MissionStrings = (char*)(MissionScript + MissionLoadAddress->strings);
  	
@@ -2064,6 +2082,19 @@ index 28a6477..041404a 100644
  }
  
  // [A] custom implemented function
+diff --git a/src_rebuild/Game/dr2limits.h b/src_rebuild/Game/dr2limits.h
+index 5a87b50..8eb5c26 100644
+--- a/src_rebuild/Game/dr2limits.h
++++ b/src_rebuild/Game/dr2limits.h
+@@ -17,7 +17,7 @@
+ #endif
+ 
+ #define MAX_MODEL_SLOTS			1536		// DO NOT CHANGE. No effect in upping it - limited by cell types
+-#define MAX_CARS				20
++#define MAX_CARS				30
+ 
+ #ifndef PSX
+ #define MAX_CAR_RESIDENT_MODELS	6			// use all permanently loaded car models available
 diff --git a/src_rebuild/Game/dr2locale.h b/src_rebuild/Game/dr2locale.h
 index 1e1449a..b68f6bf 100644
 --- a/src_rebuild/Game/dr2locale.h
