@@ -16,7 +16,7 @@ VK_TITLE_ID=${VK_TITLE_ID:-PPSA00058}
 if [ ! -d "$VK_TITLE_DIR/.git" ]; then
 	GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-redriver2-ps5} GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-none@example.com} \
 	GIT_COMMITTER_NAME=${GIT_AUTHOR_NAME:-redriver2-ps5} GIT_COMMITTER_EMAIL=${GIT_AUTHOR_EMAIL:-none@example.com} \
-	python3 "$VK_TEMPLATE_DIR/ps5/tools/new-title.py" "$VK_TITLE_DIR" --title-id "$VK_TITLE_ID" --name "Driver 2 Vulkan" --refresh 60
+	python3 "$VK_TEMPLATE_DIR/ps5/tools/new-title.py" "$VK_TITLE_DIR" --title-id "$VK_TITLE_ID" --name "REDRIVER 2" --refresh 60
 	# the overlay: this port's files, and the few template files it changes
 	git -C "$VK_TITLE_DIR" apply "$REPO/vulkan/template-changes.patch"
 fi

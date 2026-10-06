@@ -96,7 +96,7 @@ videos). The cut-scene videos (`DRIVER2/FMV`, MJPEG AVI, about 1.3 GB) are copie
 
 1. Send ShadowMountPlus (`nc <ps5> 9021 < shadowmountplus.elf`) and the ftpsrv payload.
 2. Upload the title folder to `/data/homebrew/PPSA00058` (PS5_Vulkan's `ps5/tools/deploy.sh --all`, or any FTP client).
-3. Relaunch ShadowMountPlus so it registers the title, then start **Driver 2 Vulkan** from the home screen.
+3. Relaunch ShadowMountPlus so it registers the title, then start **REDRIVER 2** from the home screen.
 4. Later builds: `build-vulkan.sh` and `ps5/tools/deploy.sh` in the title folder. The game must be closed first, otherwise the
    upload fails with `Text file busy`.
 

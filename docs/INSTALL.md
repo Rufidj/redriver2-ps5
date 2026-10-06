@@ -99,7 +99,7 @@ fogEnd=250
 1. Send the payloads: `nc -q2 <ps5-ip> 9021 < ftpsrv.elf`, then ShadowMountPlus the same way.
 2. Upload the folder to `/data/homebrew/PPSA00058`. With PS5_Vulkan's tool: `ps5/tools/deploy.sh --all` in the title folder (its README
    explains the control payload it needs); or with any FTP client (host = the console, port **2121**, no login).
-3. Send ShadowMountPlus again so that it registers the title. **Driver 2 Vulkan** appears on the home screen.
+3. Send ShadowMountPlus again so that it registers the title. **REDRIVER 2** appears on the home screen.
 4. Start it. Close it before uploading anything again (an open `eboot.bin` cannot be overwritten: `Text file busy`).
 
 ## 7. If something goes wrong

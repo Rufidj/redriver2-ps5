@@ -1,5 +1,5 @@
 /*
- * Driver 2 Vulkan - REDRIVER2 on the PS5, drawing through ps5/src/red2_render.cpp.
+ * REDRIVER 2 - REDRIVER2 on the PS5, drawing through ps5/src/red2_render.cpp.
  *
  * The base class gives the game its display: the device, the swapchain, the frame slots and the
  * present pass. The render loop is the game's own main (game/libred2vk.a), which calls the GR_*
@@ -23,7 +23,7 @@ public:
 
 	VulkanExample() : VulkanExampleBase()
 	{
-		title = "Driver 2 Vulkan";
+		title = "REDRIVER 2";
 		apiVersion = VK_API_VERSION_1_3;
 		useDynamicRendering = true;
 		requiresStencil = true;
