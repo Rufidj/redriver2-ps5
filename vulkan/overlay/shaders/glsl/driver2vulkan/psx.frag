@@ -124,7 +124,7 @@ void main()
 		color = (pc.bilinear > 0) ? bilinearTextureSample(v_texcoord.xy) : nearestTextureSample(v_texcoord.xy);
 	}
 	if (pc.pass == 1 || pc.pass == 3) { fragColor = vec4(0.0); return; }
-	vec4 outc = dither(color * v_color);
+	vec4 outc = (pc.texMode == 4) ? vec4(color.rgb, 1.0) : dither(color * v_color);
 
 	if (pc.pass == 2 && v_is3D > 0.5 && fx.shadowOn != 0) {
 		float lit = 1.0;

@@ -52,6 +52,7 @@ void main()
 	}
 	if (pc.pass == 1)
 		p = (v_is3D > 0.5) ? (((pc.cascade < 3) ? fx.lightVP[pc.cascade] : fx.spotVP[pc.cascade - 3]) * v_shadowPos) : vec4(2.0, 2.0, 2.0, 1.0);
+	if (pc.texMode == 4) p = vec4(a_position.xy, 0.0, 1.0);   // the FMV quad is already in clip space
 	p.z = (p.z + p.w) * 0.5;
 	gl_Position = p;
 }

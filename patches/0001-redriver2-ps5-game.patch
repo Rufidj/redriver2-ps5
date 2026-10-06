@@ -1349,6 +1349,27 @@ index d62f17e..e60e722 100644
  	char* homepath;
  
  	homepath = getenv(HOME_ENV); // "USERPROFILE"
+diff --git a/src_rebuild/Game/C/loadview.c b/src_rebuild/Game/C/loadview.c
+index 465eff0..0a20b15 100644
+--- a/src_rebuild/Game/C/loadview.c
++++ b/src_rebuild/Game/C/loadview.c
+@@ -170,7 +170,16 @@ void ShowLoadingScreen(char *screen_name, int effect, int loading_steps)
+ 	PutDispEnv(&load_disp);
+ 	PutDrawEnv(&load_draw);
+ 
++#ifdef __PROSPERO__
++	{
++		int n = Loadfile(screen_name, (char*)_other_buffer);
++		unsigned cs = 0; int k;
++		for (k = 20; k < 532; k++) cs += (unsigned char)_other_buffer[k];
++		printInfo("loadscreen: '%s' read %d bytes, clut sum %u\n", screen_name, n, cs);
++	}
++#else
+ 	Loadfile(screen_name, (char*)_other_buffer);
++#endif
+ 	LoadClut((u_long*)&_other_buffer[20], 320, 511);
+ 
+ 	DrawSync(0);
 diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
 index 91d8bb8..64a7f5c 100644
 --- a/src_rebuild/Game/C/main.c
