@@ -1345,9 +1345,84 @@ index 862974f..4bd5487 100644
  #define DRAW_LOD_DIST_HIGH		7000
  #define DRAW_LOD_DIST_LOW		10000
 diff --git a/src_rebuild/Game/C/event.c b/src_rebuild/Game/C/event.c
-index e913f47..17122fe 100644
+index e913f47..2a23b6f 100644
 --- a/src_rebuild/Game/C/event.c
 +++ b/src_rebuild/Game/C/event.c
+@@ -544,7 +544,7 @@ static int eventHaze = 0;
+ static int doneFirstHavanaCameraHack = 0;
+ static SVECTOR boatOffset;
+ static FixedEvent* fixedEvent = NULL;
+-int carsOnBoat = 0;
++long long carsOnBoat = 0;
+ 
+ MultiCar multiCar;
+ 
+@@ -1687,7 +1687,7 @@ void SetCamera(EVENT* ev)
+ // [D] [T]
+ void EventCollisions(CAR_DATA* cp, int type)
+ {
+-	if (carsOnBoat >> CAR_INDEX(cp) == 0)
++	if ((carsOnBoat >> CAR_INDEX(cp)) == 0)
+ 		return;
+ 
+ 	if (type == 0)
+@@ -2399,7 +2399,7 @@ void StepEvents(void)
+ 	VECTOR* vel;
+ 	CELL_OBJECT* cop;
+ 	CAR_DATA* cp;
+-	int onBoatLastFrame;
++	long long onBoatLastFrame;
+ 	int dist;
+ 	int thisCamera, otherCamera;
+ 
+@@ -2426,16 +2426,16 @@ void StepEvents(void)
+ 					if (cp->controlType != CONTROL_TYPE_NONE &&
+ 						OnBoat((VECTOR*)cp->hd.where.t, ev, &dist))
+ 					{
+-						carsOnBoat |= 1 << i;
++						carsOnBoat |= 1LL << i;
+ 					}
+ 
+ 					i++;
+ 					cp++;
+-				} while (i < MAX_CARS && i < 32);
++				} while (i < MAX_CARS);
+ 
+ 				// make Tanner on boat also
+ 				if (MainPlayer.playerType == PLAYER_TYPE_PEDESTRIAN && OnBoat((VECTOR*)MainPlayer.pos, ev, &dist))
+-					carsOnBoat |= (1 << TANNER_COLLIDER_CARID) | 0x200000;// 0x300000;
++					carsOnBoat |= (1LL << TANNER_COLLIDER_CARID) | (1LL << CAMERA_COLLIDER_CARID);
+ 
+ 				BoatOffset(&boatOffset, ev);
+ 
+@@ -2471,15 +2471,15 @@ void StepEvents(void)
+ 			// move cars on boats
+ 			if ((ev->flags & 0x40) && (carsOnBoat != 0 || onBoatLastFrame != 0))
+ 			{
+-				int bit;
++				long long bit;
+ 
+ 				speed.x = ev->position.vx - old.vx;
+ 				speed.z = ev->position.vz - old.vz;
+ 
+ 				// go thru cars
+-				for (i = 0; i < MAX_CARS + 1 && i < 32; i++)
++				for (i = 0; i < MAX_CARS + 1; i++)
+ 				{
+-					bit = (1 << i);
++					bit = (1LL << i);
+ 
+ 					if (i == TANNER_COLLIDER_CARID)
+ 					{
+@@ -2501,7 +2501,7 @@ void StepEvents(void)
+ 						if (i == TANNER_COLLIDER_CARID)
+ 						{
+ 							SetTannerPosition(pos);
+-							carsOnBoat &= ~(1 << TANNER_COLLIDER_CARID);
++							carsOnBoat &= ~(1LL << TANNER_COLLIDER_CARID);
+ 						}
+ 						else if ((onBoatLastFrame & bit) == 0)
+ 						{
 @@ -2986,7 +2986,7 @@ void DrawEvents(int camera)
  
  										pos.vx = pos.vx - boatOffset.vx;
@@ -1357,6 +1432,19 @@ index e913f47..17122fe 100644
  									}
  									else if (type == 0x400)
  									{
+diff --git a/src_rebuild/Game/C/event.h b/src_rebuild/Game/C/event.h
+index 6c1dc54..859eb24 100644
+--- a/src_rebuild/Game/C/event.h
++++ b/src_rebuild/Game/C/event.h
+@@ -37,7 +37,7 @@ extern EventGlobal events;
+ extern CELL_OBJECT *EventCop;
+ extern int event_models_active;
+ 
+-extern int carsOnBoat;
++extern long long carsOnBoat;
+ 
+ extern void InitEvents(); // 0x0004BBD4
+ extern void SetUpEvents(int full); // 0x00046258
 diff --git a/src_rebuild/Game/C/glaunch.c b/src_rebuild/Game/C/glaunch.c
 index 4aca8ae..2a51463 100644
 --- a/src_rebuild/Game/C/glaunch.c
@@ -1396,6 +1484,48 @@ index 4aca8ae..2a51463 100644
  	quit = 0;
  
  	RenderArgs.nRenders = 0;
+diff --git a/src_rebuild/Game/C/handling.c b/src_rebuild/Game/C/handling.c
+index af43f24..11d2948 100644
+--- a/src_rebuild/Game/C/handling.c
++++ b/src_rebuild/Game/C/handling.c
+@@ -282,7 +282,7 @@ void GlobalTimeStep(void)
+ 	static RigidBodyState _d0[MAX_CARS]; // offset 0x410
+ 	static RigidBodyState _d1[MAX_CARS]; // offset 0x820
+ 
+-	int mayBeCollidingBits;
++	long long mayBeCollidingBits;
+ 	int tmp;
+ 	RigidBodyState* thisState_i, *thisState_j, * thisDelta;
+ 	CAR_DATA* cp, * c1;
+@@ -447,7 +447,7 @@ void GlobalTimeStep(void)
+ 
+ 					// [A] optimized run to not use the box checking
+ 					// as it has already composed bitfield / pairs
+-					if ((mayBeCollidingBits & (1 << CAR_INDEX(c1))) == 0 || (c1->hd.speed == 0 && cp->hd.speed == 0))
++					if ((mayBeCollidingBits & (1LL << CAR_INDEX(c1))) == 0 || (c1->hd.speed == 0 && cp->hd.speed == 0))
+ 					{
+ 						continue;
+ 					}
+@@ -1021,7 +1021,7 @@ void CheckCarToCarCollisions(void)
+ 		// make player handled cars always processed with precision
+ 		if (cp->hndType == 0)
+ 		{
+-			cp->hd.mayBeColliding = (1 << 31);
++			cp->hd.mayBeColliding = (1LL << 63);
+ 		}
+ 
+ 		loop1++;
+@@ -1044,8 +1044,8 @@ void CheckCarToCarCollisions(void)
+ 				bb2->x0 < bb1->x1 && bb2->z0 < bb1->z1 && bb1->x0 < bb2->x1 &&
+ 				bb1->z0 < bb2->z1 && bb2->y0 < bb1->y1 && bb1->y0 < bb2->y1)
+ 			{
+-				car_data[loop1].hd.mayBeColliding |= (1 << loop2);
+-				car_data[loop2].hd.mayBeColliding |= (1 << loop1);
++				car_data[loop1].hd.mayBeColliding |= (1LL << loop2);
++				car_data[loop2].hd.mayBeColliding |= (1LL << loop1);
+ 			}
+ 
+ 			loop2++;
 diff --git a/src_rebuild/Game/C/loadsave.c b/src_rebuild/Game/C/loadsave.c
 index d62f17e..e60e722 100644
 --- a/src_rebuild/Game/C/loadsave.c
@@ -1931,27 +2061,31 @@ index d3c875b..daa7311 100644
  		if (Mission.message_timer[0] != 0)
  		{
 diff --git a/src_rebuild/Game/C/mission.c b/src_rebuild/Game/C/mission.c
-index 5b29293..29164cf 100644
+index 5b29293..f299575 100644
 --- a/src_rebuild/Game/C/mission.c
 +++ b/src_rebuild/Game/C/mission.c
-@@ -101,7 +101,7 @@ GAMETYPE GameType = GAME_MISSION;
+@@ -101,8 +101,8 @@ GAMETYPE GameType = GAME_MISSION;
  int gCurrentMissionNumber = 0;
  
  int maxPlayerCars = 1;
 -int maxCivCars = 14;
-+int maxCivCars = 24;
- int maxParkedCars = 7;
+-int maxParkedCars = 7;
++int maxCivCars = 40;
++int maxParkedCars = 16;
  int maxCopCars = 4;
  
-@@ -239,7 +239,7 @@ void InitialiseMissionDefaults(void)
+ int gPlayerDamageFactor = 0;
+@@ -239,8 +239,8 @@ void InitialiseMissionDefaults(void)
  	tannerDeathTimer = 0;
  
  	maxPlayerCars = 1;
 -	maxCivCars = 14;
-+	maxCivCars = 24;
- 	maxParkedCars = 7;
+-	maxParkedCars = 7;
++	maxCivCars = 40;
++	maxParkedCars = 16;
  	maxCopCars = 4;
  
+ 	gPlayerDamageFactor = 4096;
 @@ -465,7 +465,7 @@ void LoadMission(int missionnum)
  	MissionStrings = (char*)(MissionScript + MissionLoadAddress->strings);
  	
@@ -1961,6 +2095,29 @@ index 5b29293..29164cf 100644
  	else
  		loadsize = length;
  
+@@ -1327,14 +1327,16 @@ int Swap2Cars(int curslot, int newslot)
+ 	memcpy((u_char*)&car_data[curslot], (u_char*)&cd, sizeof(CAR_DATA));
+ 
+ 	// [A] event - swap cars on boat
+-	tmp = carsOnBoat & (1 << newslot);
+-	carsOnBoat &= ~(1 << newslot);
++	{
++		const long long tmpBoat = carsOnBoat & (1LL << newslot);
++		carsOnBoat &= ~(1LL << newslot);
+ 
+-	if (carsOnBoat & (1 << curslot))
+-		carsOnBoat |= (1 << newslot);
++		if (carsOnBoat & (1LL << curslot))
++			carsOnBoat |= (1LL << newslot);
+ 
+-	if(tmp)
+-		carsOnBoat |= (1 << curslot);
++		if (tmpBoat)
++			carsOnBoat |= (1LL << curslot);
++	}
+ 
+ 	// swap ids
+ 	car_data[newslot].id = newslot;
 diff --git a/src_rebuild/Game/C/motion_c.c b/src_rebuild/Game/C/motion_c.c
 index c1842b5..c8c58af 100644
 --- a/src_rebuild/Game/C/motion_c.c
@@ -2527,7 +2684,7 @@ index c8e9721..6efde89 100644
  	
  	if (gPlaying == 0 || g_wavData == NULL)
 diff --git a/src_rebuild/Game/dr2limits.h b/src_rebuild/Game/dr2limits.h
-index 5a87b50..8eb5c26 100644
+index 5a87b50..729b50a 100644
 --- a/src_rebuild/Game/dr2limits.h
 +++ b/src_rebuild/Game/dr2limits.h
 @@ -17,7 +17,7 @@
@@ -2535,10 +2692,22 @@ index 5a87b50..8eb5c26 100644
  
  #define MAX_MODEL_SLOTS			1536		// DO NOT CHANGE. No effect in upping it - limited by cell types
 -#define MAX_CARS				20
-+#define MAX_CARS				30
++#define MAX_CARS				48
  
  #ifndef PSX
  #define MAX_CAR_RESIDENT_MODELS	6			// use all permanently loaded car models available
+@@ -27,9 +27,9 @@
+ 
+ #define SPECIAL_CAR_SLOT        (MAX_CAR_RESIDENT_MODELS-1)
+ 
+-#define MAX_PEDESTRIANS			28
++#define MAX_PEDESTRIANS			48
+ #define MAX_SEATED_PEDS			20
+-#define MAX_PLACED_PEDS			15
++#define MAX_PLACED_PEDS			32
+ #define MAX_EXPLOSION_OBJECTS	5
+ #define MAX_THROWN_BOMBS		5
+ #define MAX_MOTION_CAPTURE		24
 diff --git a/src_rebuild/Game/dr2locale.h b/src_rebuild/Game/dr2locale.h
 index 1e1449a..b68f6bf 100644
 --- a/src_rebuild/Game/dr2locale.h
@@ -2554,6 +2723,19 @@ index 1e1449a..b68f6bf 100644
  
  extern int InitStringMng();
  extern void DeinitStringMng();
+diff --git a/src_rebuild/Game/dr2types.h b/src_rebuild/Game/dr2types.h
+index fbe9fb4..71425dd 100644
+--- a/src_rebuild/Game/dr2types.h
++++ b/src_rebuild/Game/dr2types.h
+@@ -341,7 +341,7 @@ typedef struct _HANDLING_DATA
+ 	int direction;
+ 	int front_vel;
+ 	int rear_vel;
+-	int mayBeColliding;		// [A] now used as a bitfield to create collision pairs
++	long long mayBeColliding;	// [A] now used as a bitfield to create collision pairs (64 bits: more cars than the original's 20)
+ 	short revs;
+ 	char gear;
+ 	char changingGear;
 diff --git a/src_rebuild/Game/engine/cell.h b/src_rebuild/Game/engine/cell.h
 index 07d7f59..97d4777 100644
 --- a/src_rebuild/Game/engine/cell.h
