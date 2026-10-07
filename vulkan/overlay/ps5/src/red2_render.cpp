@@ -72,8 +72,10 @@ int g_cfg_farMeshDebug = 1;     // [render] farMeshDebug: 1 (default) = no texel
 int g_cfg_farMeshCull = 1;      // [render] farMeshCull: 0 none, 1 clockwise front faces, 2 counter-clockwise
 int g_cfg_hdSky = 1;           // [render] hdSky: the panorama sky of the city
 int g_cfg_frameInterval = 2;   // vblanks per game frame: 2 = 30 fps, 1 = 60 (config.ini, [render] frameInterval)
+extern "C" int g_cfg_interp;   // the game (main.c): 60 fps by drawing every logic step twice
 static void readFrameInterval()
 {
+	g_cfg_interp = 1;   // on unless the config says interpolate=0
 	FILE* f = fopen("/app0/assets/config.ini", "rb");
 	if (!f) return;
 	char line[256];
@@ -81,13 +83,14 @@ static void readFrameInterval()
 		int v;
 		if (sscanf(line, " frameInterval = %d", &v) == 1 && v >= 1 && v <= 4) g_cfg_frameInterval = v;
 		if (sscanf(line, " hdSky = %d", &v) == 1) g_cfg_hdSky = v;
+		if (sscanf(line, " interpolate = %d", &v) == 1) g_cfg_interp = v;
 		if (sscanf(line, " farMesh = %d", &v) == 1) g_cfg_farMesh = v;
 		if (sscanf(line, " farMeshNear = %d", &v) == 1) g_cfg_farMeshNear = v;
 		if (sscanf(line, " farMeshCull = %d", &v) == 1) g_cfg_farMeshCull = v;
 		if (sscanf(line, " farMeshDebug = %d", &v) == 1) g_cfg_farMeshDebug = v;
 	}
 	fclose(f);
-	LOGF("vulkan: frame interval %d vblank(s)\n", g_cfg_frameInterval);
+	LOGF("vulkan: frame interval %d vblank(s), interpolation %d\n", g_cfg_frameInterval, g_cfg_interp);
 }
 int g_dbg_wireframeMode = 0, g_dbg_texturelessMode = 0;
 int vram_need_update = 1, framebuffer_need_update = 0;
@@ -203,6 +206,8 @@ static bool g_shadowReady = false;
 static unsigned g_frameNo = 0;
 static size_t farChunkCount();
 static int g_traceDraws = -1;       // >= 0: tracing this frame's draws (armed by the file /app0/tracenow)
+extern "C" void GR_PS5_TraceNext() { if (g_traceDraws < 0) g_traceDraws = 0; }
+//       // >= 0: tracing this frame's draws (armed by the file /app0/tracenow)
 static double nowMs() { timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1000.0 + t.tv_nsec / 1e6; }
 static double g_pfFrame = 0, g_pfWait = 0, g_pfSubmit = 0, g_pfLast = 0, g_pfDraws = 0, g_pfVerts = 0;
 static unsigned g_pfN = 0;
@@ -1002,8 +1007,11 @@ static VkBuffer g_dumpBuf = VK_NULL_HANDLE;
 static VkDeviceMemory g_dumpMem = VK_NULL_HANDLE;
 static void* g_dumpMap = nullptr;
 // dumped when the file /app0/dumpnow exists (uploaded by FTP while the game runs); it is removed after
+static int g_burstLeft = 0;
+extern "C" void GR_PS5_DumpBurst(int frames) { if (g_burstLeft == 0) g_burstLeft = frames; }
 static bool dumpWanted(unsigned frame)
 {
+	if (g_burstLeft > 0) { g_burstLeft--; return true; }
 	if (frame % 20) return false;
 	FILE* f = fopen("/app0/dumpnow", "rb");
 	if (!f) return false;
@@ -1455,16 +1463,19 @@ static uint32_t commitFx()
 
 void GR_DrawTriangles(int start_vertex, int triangles)
 {
-	if (g_skipDraws) { g_pfSkipped += triangles; return; }
+	if (g_skipDraws) { if (g_traceDraws >= 0 && g_traceDraws < 400) LOGF("trace: skipped draw (offscreen) tris=%d\n", triangles); g_pfSkipped += triangles; return; }
 	g_pfDraws++; g_pfVerts += triangles * 3;
 	ensureRendering();
 	if (g_skyPending && !g_inShadow && !g_prepassKind) {
 		if (g_traceDraws >= 0) LOGF("trace: --- sky pass drawn (before draw %d) ---\n", g_traceDraws);
 		drawSkyPass();
 	}
-	if (g_farPending && !g_inShadow && !g_prepassKind)
+	if (g_farPending && !g_inShadow && !g_prepassKind) {
+		if (g_traceDraws >= 0) LOGF("trace: --- far pass drawn (before draw %d) --- skyH=%.1f farOfs=(%.1f,%.1f) vp=(%.0f,%.0f,%.0f,%.0f) sc=(%d,%d,%u,%u) farDrawStart=%d\n", g_traceDraws, g_fx.skyH, g_fx.farOfsX, g_fx.farOfsY, g_viewport.x, g_viewport.y, g_viewport.width, g_viewport.height, g_scissor.offset.x, g_scissor.offset.y, g_scissor.extent.width, g_scissor.extent.height, 0);
 		drawFarPass();
+	}
 	if (g_traceDraws >= 0 && g_traceDraws < 400) {
+		if (g_traceDraws == 6 || g_traceDraws == 33) LOGF("trace: state at #%d: vp=(%.0f,%.0f,%.0f,%.0f) sc=(%d,%d,%u,%u) skyH=%.1f ofs=(%.1f,%.1f)\n", g_traceDraws, g_viewport.x, g_viewport.y, g_viewport.width, g_viewport.height, g_scissor.offset.x, g_scissor.offset.y, g_scissor.extent.width, g_scissor.extent.height, g_fx.skyH, g_fx.farOfsX, g_fx.farOfsY);
 		LOGF("trace: #%d kind=%d tex=%u mode=%d blend=%d depth=%d prepassColour=%d stencil=%d tris=%d start=%d pass=%d\n", g_traceDraws,
 			currentKind(), g_curTex, g_texMode, g_blend, g_depthTest, (int)g_prepassColour, g_stencilMode, triangles, start_vertex, g_inShadow ? 1 : (g_prepassKind ? 3 : g_pass));
 	}

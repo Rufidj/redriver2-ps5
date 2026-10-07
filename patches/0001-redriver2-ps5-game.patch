@@ -1444,7 +1444,7 @@ index d62f17e..e60e722 100644
  
  	homepath = getenv(HOME_ENV); // "USERPROFILE"
 diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
-index 91d8bb8..b765ed8 100644
+index 91d8bb8..10792d8 100644
 --- a/src_rebuild/Game/C/main.c
 +++ b/src_rebuild/Game/C/main.c
 @@ -832,6 +832,12 @@ int numInactiveCars = 0;
@@ -1477,7 +1477,219 @@ index 91d8bb8..b765ed8 100644
  					break;
  			}
  		}
-@@ -1588,12 +1594,27 @@ void State_GameLoop(void* param)
+@@ -1537,6 +1543,166 @@ void CheckForPause(void)
+ 	}
+ }
+ 
++
++#ifdef __PROSPERO__
++// ---- PS5: 60 fps by rendering every logic step twice ------------------------------------------------------------
++// The game logic runs at 30 Hz. Each step is drawn twice: first "A", a picture half way between the previous step and this
++// one (cars and camera interpolated, the game frozen as in its pause so that nothing advances twice), then, one vblank
++// later, "B", the real picture.
++int g_cfg_interp = 0;		// config.ini [render] interpolate (the Vulkan renderer reads it)
++int gInterpPhase = 0;		// 0 = normal draw, 1 = interpolated picture, 2 = the real picture of an interpolated step
++
++typedef struct
++{
++	char valid;
++	short m[3][3];
++	int t[3];
++	short dm[3][3];
++} INTERP_CAR;
++
++static INTERP_CAR s_prevCar[MAX_CARS];
++static INTERP_CAR s_curCar[MAX_CARS];
++static VECTOR s_prevCamPos, s_curCamPos, s_initCamPos;
++static SVECTOR s_initCamAng;
++static SVECTOR s_prevCamAng, s_curCamAng;
++static int s_havePrevCam = 0;
++static int s_interpPending = 0;
++static int s_lastTick = 0;
++static int s_thisTickInterp = 0;
++
++static void InterpSaveCar(INTERP_CAR* d, CAR_DATA* cp)
++{
++	d->valid = (cp->controlType != CONTROL_TYPE_NONE);
++	memcpy(d->m, cp->hd.where.m, sizeof(d->m));
++	memcpy(d->t, cp->hd.where.t, sizeof(d->t));
++	memcpy(d->dm, cp->hd.drawCarMat.m, sizeof(d->dm));
++}
++
++// the cars as they are before this step
++static void InterpSnapshotCars(void)
++{
++	int i;
++	for (i = 0; i < MAX_CARS; i++)
++		InterpSaveCar(&s_prevCar[i], &car_data[i]);
++}
++
++static int InterpWanted(void)
++{
++	return g_cfg_interp && !pauseflag && NumPlayers == 1 && !FastForward && !FadingScreen && !gSkipInGameCutscene && !gInGameCutsceneActive && !bMissionTitleFade &&
++		FrameCnt > 5 && CameraCnt > 2 && WantPause == 0 && gDrawPauseMenus == 0 && events.cameraEvent == NULL;
++}
++
++static int InterpLerpAngle(int a, int b)
++{
++	int d = ((b - a) + 2048) & 4095;
++	d -= 2048;
++	return (a + d / 2) & 4095;
++}
++
++// called by RenderGame2 right after the camera of this step is known: A draws the middle of the two last cameras
++void InterpBeginA(void)
++{
++	int i;
++
++	s_curCamPos = s_initCamPos;
++	s_curCamAng = s_initCamAng;
++
++	if (s_havePrevCam)
++	{
++		int dx = s_curCamPos.vx - s_prevCamPos.vx, dz = s_curCamPos.vz - s_prevCamPos.vz;
++		int da = ((s_curCamAng.vy - s_prevCamAng.vy + 2048) & 4095) - 2048;
++		// a cut (another camera, a respawn) is shown as it is
++		if (ABS(dx) < 2500 && ABS(dz) < 2500 && ABS(da) < 400 && ABS(s_curCamAng.vx - s_prevCamAng.vx) < 200 && ABS(s_curCamAng.vz - s_prevCamAng.vz) < 200)
++		{
++			camera_position.vx = (s_prevCamPos.vx + s_curCamPos.vx) / 2;
++			camera_position.vy = (s_prevCamPos.vy + s_curCamPos.vy) / 2;
++			camera_position.vz = (s_prevCamPos.vz + s_curCamPos.vz) / 2;
++			camera_angle.vx = (s_prevCamAng.vx + s_curCamAng.vx) / 2;
++			camera_angle.vy = InterpLerpAngle(s_prevCamAng.vy, s_curCamAng.vy);
++			camera_angle.vz = (s_prevCamAng.vz + s_curCamAng.vz) / 2;
++			BuildWorldMatrix();
++		}
++	}
++
++	for (i = 0; i < MAX_CARS; i++)
++	{
++		CAR_DATA* cp = &car_data[i];
++		INTERP_CAR* p = &s_prevCar[i];
++		int j, k;
++
++		InterpSaveCar(&s_curCar[i], cp);
++
++		if (!p->valid || cp->controlType == CONTROL_TYPE_NONE)
++			continue;
++
++		if (ABS(cp->hd.where.t[0] - p->t[0]) > 2500 || ABS(cp->hd.where.t[2] - p->t[2]) > 2500 || ABS(cp->hd.where.t[1] - p->t[1]) > 2500)
++			continue;
++
++		for (j = 0; j < 3; j++)
++		{
++			cp->hd.where.t[j] = (cp->hd.where.t[j] + p->t[j]) / 2;
++			for (k = 0; k < 3; k++)
++			{
++				cp->hd.where.m[j][k] = (short)((cp->hd.where.m[j][k] + p->m[j][k]) / 2);
++				cp->hd.drawCarMat.m[j][k] = (short)((cp->hd.drawCarMat.m[j][k] + p->dm[j][k]) / 2);
++			}
++		}
++	}
++}
++
++// after A: the cars go back to this step
++void InterpEndA(void)
++{
++	int i;
++	for (i = 0; i < MAX_CARS; i++)
++	{
++		CAR_DATA* cp = &car_data[i];
++		INTERP_CAR* c = &s_curCar[i];
++
++		if (!c->valid)
++			continue;
++
++		memcpy(cp->hd.where.m, c->m, sizeof(c->m));
++		memcpy(cp->hd.where.t, c->t, sizeof(c->t));
++		memcpy(cp->hd.drawCarMat.m, c->dm, sizeof(c->dm));
++	}
++}
++
++// InitCamera moves the chase camera on every call (angle smoothing, distance): the real picture must start from the same
++// state as the interpolated one did, then it ends where the game expects it
++static PLAYER s_camPlayer;
++static int s_savedGCameraDistance, s_savedGCameraAngle;
++
++void InterpSaveCamState(int view)
++{
++	s_camPlayer = player[view];
++	s_savedGCameraDistance = gCameraDistance;
++	s_savedGCameraAngle = gCameraAngle;
++}
++
++void InterpRestoreCamState(int view)
++{
++	player[view] = s_camPlayer;
++	gCameraDistance = s_savedGCameraDistance;
++	gCameraAngle = s_savedGCameraAngle;
++}
++
++// the camera exactly as InitCamera left it (other drawing code reuses camera_angle as scratch afterwards)
++void InterpNoteCamera(void)
++{
++	s_initCamPos = camera_position;
++	s_initCamAng = camera_angle;
++}
++
++// the camera of the step just drawn is the "previous" one of the next step
++void InterpEndFrame(void)
++{
++	s_prevCamPos = s_initCamPos;
++	s_prevCamAng = s_initCamAng;
++	s_havePrevCam = 1;
++}
++#endif
++
+ int gMultiStep = 0;
+ 
+ // [D] [T]
+@@ -1551,9 +1717,44 @@ void State_GameLoop(void* param)
+ 		return;
+ 	}
+ 
++#ifdef __PROSPERO__
++	if (s_interpPending)
++	{
++		// the real picture of the last step, one vblank after the interpolated one
++		if (VSync(-1) - s_lastTick < 1)
++			return;
++
++		s_interpPending = 0;
++		gInterpPhase = 2;
++		DrawGame();
++		gInterpPhase = 0;
++
++		if (game_over)
++			SetState(STATE_GAMECOMPLETE);
++		return;
++	}
++
++	s_thisTickInterp = 0;
++
++	if (InterpWanted())
++	{
++		if (VSync(-1) - s_lastTick < 2)
++			return;
++
++		s_lastTick = VSync(-1);
++		s_thisTickInterp = 1;
++		InterpSnapshotCars();
++	}
++	else
++#endif
+ 	if (!FilterFrameTime())
+ 		return;
+ 
++#ifdef __PROSPERO__
++	if (!s_thisTickInterp)
++		s_lastTick = VSync(-1);
++#endif
++
+ 	UpdatePadData();
+ 	CheckForPause();
+ 
+@@ -1588,12 +1789,35 @@ void State_GameLoop(void* param)
  	}
  #else
  	cnt = FastForward ? 7 : 1;
@@ -1497,15 +1709,86 @@ index 91d8bb8..b765ed8 100644
  	_CutRec_Draw();
 +#ifdef __PROSPERO__
 +	const double perfT2 = PsyX_NowMs();
++	if (s_thisTickInterp && !pauseflag && WantPause == 0 && gDrawPauseMenus == 0 && !FadingScreen)
++	{
++		gInterpPhase = 1;
++		s_interpPending = 1;
++	}
 +#endif
  	DrawGame();
++#ifdef __PROSPERO__
++	gInterpPhase = 0;
++#endif
 +#ifdef __PROSPERO__
 +	GR_PS5_PerfCpu(1, PsyX_NowMs() - perfT2);
 +#endif
  	
  	if (game_over)
  		SetState(STATE_GAMECOMPLETE);
-@@ -1826,7 +1847,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1606,17 +1830,40 @@ int ObjectDrawnValue = 0;
+ // [D] [T]
+ void DrawGame(void)
+ {
++#ifdef __PROSPERO__
++	const int savedFrameCnt = FrameCnt;
++	const int savedPause = pauseflag;
++	// interpolated pictures need their own stamp so that the real one of the same step still draws every object
++	const int stamp = gInterpPhase ? (FrameCnt * 2 + (gInterpPhase == 2)) : FrameCnt;
++#else
++	const int stamp = FrameCnt;
++#endif
++
+ 	if (NumPlayers == 1 || NoPlayerControl)
+ 	{
+-		ObjectDrawnValue = FrameCnt;
++		ObjectDrawnValue = stamp;
+ 		DrawPauseMenus();
+ 
+ 		RenderGame2(0);
++#ifdef __PROSPERO__
++		DB* const drewIn = current;
++#endif
+ 		SwapDrawBuffers();
++#ifdef __PROSPERO__
++		if (gInterpPhase)
++		{
++			// The PC port emulates the PSX's double buffer in PutDispEnv and needs the two draw buffers to alternate on every
++			// picture; SwapDrawBuffers alternates them once per FrameCnt, and both pictures of a step share it.
++			current = (drewIn == &MPBuff[0][0]) ? &MPBuff[0][1] : &MPBuff[0][0];
++			last = drewIn;
++			ClearOTagR((u_long*)current->ot, OTSIZE);
++			current->primptr = current->primtab;
++		}
++#endif
+ 	}
+ 	else
+ 	{
+-		ObjectDrawnValue = FrameCnt;
++		ObjectDrawnValue = stamp;
+ 		RenderGame2(0);
+ 		SwapDrawBuffers2(0);
+ 
+@@ -1633,6 +1880,19 @@ void DrawGame(void)
+ 		PsyX_EndScene();
+ #endif
+ 
++#ifdef __PROSPERO__
++	if (gInterpPhase == 1)
++	{
++		// the interpolated picture is over: the game is as it was
++		InterpEndA();
++		pauseflag = savedPause;
++		FrameCnt = savedFrameCnt;
++		return;
++	}
++
++	InterpEndFrame();
++#endif
++
+ 	FrameCnt++;
+ }
+ 
+@@ -1826,7 +2086,6 @@ int redriver2_main(int argc, char** argv)
  	SetVideoMode(video_mode);
  
  	CdInit();
@@ -1513,7 +1796,7 @@ index 91d8bb8..b765ed8 100644
  
  	SpuInit();
  	InitGeom();
-@@ -1837,7 +1857,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1837,7 +2096,6 @@ int redriver2_main(int argc, char** argv)
  	InitControllers();
  	Init_FileSystem();
  	InitSound();
@@ -1521,7 +1804,7 @@ index 91d8bb8..b765ed8 100644
  	// [A] REDRIVER 2 version auto-detection
  	// this is the only difference between the files on CD
  #ifdef DEMO_VERSION
-@@ -1860,6 +1879,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1860,6 +2118,7 @@ int redriver2_main(int argc, char** argv)
  	{
  		char str[320];
  		sprintf(str, "Cannot initialize REDRIVER2\n\nGame files not found by folder '%s'\n", gDataFolder);
@@ -1529,7 +1812,7 @@ index 91d8bb8..b765ed8 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", str, NULL);
  		return -1;
  	}
-@@ -1867,6 +1887,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1867,6 +2126,7 @@ int redriver2_main(int argc, char** argv)
  	// init language
  	if (!InitStringMng())
  	{
@@ -1537,7 +1820,7 @@ index 91d8bb8..b765ed8 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", "Unable to load language files!\n\nSee console for details", NULL);
  		return -1;
  	}
-@@ -2221,6 +2242,10 @@ void RenderGame2(int view)
+@@ -2221,7 +2481,27 @@ void RenderGame2(int view)
  	int notInDreaAndStevesEvilLair;
  
  	CurrentPlayerView = view;
@@ -1545,10 +1828,27 @@ index 91d8bb8..b765ed8 100644
 +	PGXP_ShadowCasterReset();
 +	PS5_LightsReset();
 +#endif
++#ifdef __PROSPERO__
++	if (gInterpPhase == 2)
++		InterpRestoreCamState(view);
++	else if (gInterpPhase == 1)
++		InterpSaveCamState(view);
++
++	InitCamera(&player[view]);
++	InterpNoteCamera();
++
++	if (gInterpPhase == 1)
++	{
++		InterpBeginA();
++		pauseflag = 1;		// nothing advances while the interpolated picture is drawn
++	}
++#else
  	InitCamera(&player[view]);
++#endif
  
  #ifndef PSX
-@@ -2371,6 +2396,35 @@ void RenderGame2(int view)
+ 	int screenW, screenH;
+@@ -2371,6 +2651,35 @@ void RenderGame2(int view)
  	gNumDlights = 0;
  #endif
  
@@ -1606,6 +1906,30 @@ index b79a956..799b2f3 100644
  	D_MALLOC_BEGIN();
  
  	cell_ptrs = (ushort*)D_MALLOC(4096 * sizeof(short));
+diff --git a/src_rebuild/Game/C/mdraw.c b/src_rebuild/Game/C/mdraw.c
+index d3c875b..daa7311 100644
+--- a/src_rebuild/Game/C/mdraw.c
++++ b/src_rebuild/Game/C/mdraw.c
+@@ -1,4 +1,7 @@
+ #include "driver2.h"
++#ifdef __PROSPERO__
++extern int gInterpPhase;
++#endif
+ #include "mdraw.h"
+ #include "pres.h"
+ #include "mission.h"
+@@ -103,7 +106,11 @@ void DrawMission(void)
+ 			PrintScaledString(SCREEN_H / 2 + SCREEN_H / 4, string, 32 - (g321GoDelay & 0x1f));
+ 		}
+ 	}
++#ifdef __PROSPERO__
++	else if (!pauseflag || gInterpPhase == 1)
++#else
+ 	else if (!pauseflag)
++#endif
+ 	{
+ 		if (Mission.message_timer[0] != 0)
+ 		{
 diff --git a/src_rebuild/Game/C/mission.c b/src_rebuild/Game/C/mission.c
 index 5b29293..29164cf 100644
 --- a/src_rebuild/Game/C/mission.c
@@ -2185,6 +2509,23 @@ index 28a6477..041404a 100644
  }
  
  // [A] custom implemented function
+diff --git a/src_rebuild/Game/C/xaplay.c b/src_rebuild/Game/C/xaplay.c
+index c8e9721..6efde89 100644
+--- a/src_rebuild/Game/C/xaplay.c
++++ b/src_rebuild/Game/C/xaplay.c
+@@ -125,7 +125,12 @@ int gXASubtitlePauseTime = 0;
+ 
+ void PrintXASubtitles(int yPos)
+ {
++#ifdef __PROSPERO__
++	extern int gInterpPhase;
++	if (gSubtitles == 0 || (pauseflag && gInterpPhase != 1))
++#else
+ 	if (gSubtitles == 0 || pauseflag)
++#endif
+ 		return;
+ 	
+ 	if (gPlaying == 0 || g_wavData == NULL)
 diff --git a/src_rebuild/Game/dr2limits.h b/src_rebuild/Game/dr2limits.h
 index 5a87b50..8eb5c26 100644
 --- a/src_rebuild/Game/dr2limits.h

@@ -1120,7 +1120,7 @@ index a9d42f0..074c076 100644
  	out->py = 0.0f;
  	out->pz = 1.0f;
 diff --git a/src/pad/PsyX_pad.cpp b/src/pad/PsyX_pad.cpp
-index d073549..8c4c260 100644
+index d073549..afb38b0 100644
 --- a/src/pad/PsyX_pad.cpp
 +++ b/src/pad/PsyX_pad.cpp
 @@ -7,6 +7,13 @@
@@ -1137,6 +1137,18 @@ index d073549..8c4c260 100644
  extern "C"
  {
  extern int g_padCommEnable;
+@@ -132,7 +139,11 @@ void PsyX_Pad_InitPad(int slot, u_char* padData)
+ 		bool wasConnected = (pad->id == 0x41 || pad->id == 0x73);
+ 
+ 		if(!wasConnected)
++#ifdef __PROSPERO__
++			pad->id = slot == 0 ? 0x73 : 0xFF;	// PS5: analog mode from the start (left stick steers); Select+Start still switches it
++#else
+ 			pad->id = slot == 0 ? 0x41 : 0xFF;	// since keyboard is a main controller - it's always on
++#endif
+ 
+ 		// only reset buttons
+ 		pad->buttons[0] = 0xFF;
 diff --git a/src/platform.h b/src/platform.h
 index 3f16bbe..325d381 100644
 --- a/src/platform.h

@@ -126,3 +126,7 @@ After a new build, upload again (game closed). `config.ini` is only uploaded whe
 The game's texts come from `DRIVER2/LANG/*_GAME.LTXT` / `*_MISSION.LTXT` of your own copy. Pick the language in `assets/config.ini`,
 section `[game]`: `languageId=0` English, `1` Italian, `2` German, `3` French, `4` Spanish. Menu pictures come from the game's own files
 (`GFX/`, `FRONTEND.BIN`), so use the files of the same language version.
+
+## 10. 60 fps
+
+The logic of the game runs at 30 Hz. The Vulkan title draws every step twice, a picture in between (cars and camera interpolated) and the real one, which makes 60 fps. Pedestrians and particles still move at 30 Hz. Switch it off with `interpolate=0` in `assets/config.ini`, section `[render]` (it is on by default). It is off by itself in pause, cutscenes, fades and with two players.
