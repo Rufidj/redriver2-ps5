@@ -2859,10 +2859,10 @@ index e66519f..6f55a62 100644
  // FMV main function
 diff --git a/src_rebuild/Game/C/farmesh.c b/src_rebuild/Game/C/farmesh.c
 new file mode 100644
-index 0000000..c1bd87b
+index 0000000..f4e881f
 --- /dev/null
 +++ b/src_rebuild/Game/C/farmesh.c
-@@ -0,0 +1,482 @@
+@@ -0,0 +1,538 @@
 +// The far field of the PS5 mod: the map beyond the game's own drawing range, as static meshes.
 +//
 +// The PSX pipeline cannot reach far: the GTE saturates depth at 16 bits (~32 cells) and the game walks every cell and
@@ -3115,14 +3115,70 @@ index 0000000..c1bd87b
 +	}
 +}
 +
++// Sprites (trees, lamps, signs) face the camera in the game: far away they become two crossed quads standing at the
++// same place (seen from any side one of them is face on), double sided, with their transparent texels dropped.
++static void BakeSprite(const CELL_OBJECT& co, MODEL* model, int cellx, int cellz)
++{
++	const int rcx = cellx % MAP_REGION_SIZE, rcz = cellz % MAP_REGION_SIZE;
++	const int chunk = ((rcz >> 3) << 2) + (rcx >> 3);
++	const float ox = (float)(((cellx - (rcx & 7)) - (cells_across / 2)) * MAP_CELL_SIZE);
++	const float oz = (float)(((cellz - (rcz & 7)) - (cells_down / 2)) * MAP_CELL_SIZE);
++
++	SVECTOR* src = GET_MODEL_DATA(SVECTOR, model, vertices);
++	POLYFT4* polys = GET_MODEL_DATA(POLYFT4, model, poly_block);
++
++	for (int n = 0; n < (int)model->num_polys; n++, polys++)
++	{
++		const unsigned short page = polys->texture_set;
++		const unsigned short clut = polys->texture_id;
++		if (!EnsurePage(page))
++			continue;
++
++		const int idx[4] = { polys->v0, polys->v1, polys->v3, polys->v2 };
++		const UV_INFO uv[4] = { polys->uv0, polys->uv1, polys->uv3, polys->uv2 };
++
++		for (int cross = 0; cross < 2; cross++)
++		{
++			float p[4][3];
++			for (int k = 0; k < 4; k++)
++			{
++				const SVECTOR* sv = &src[idx[k]];
++				const float x = (float)sv->vx, y = (float)sv->vy, z = (float)sv->vz;
++				// the second quad is the first turned a quarter about the vertical axis
++				const float wx = cross ? z : x;
++				const float wz = cross ? -x : z;
++				p[k][0] = (float)co.pos.vx + wx - ox;
++				p[k][1] = (float)co.pos.vy + y;
++				p[k][2] = (float)co.pos.vz + wz - oz;
++			}
++
++			AddQuad(&g_bk[chunk][0], p, uv, page, clut, 32, 4);
++
++			// the back face: the same quad with the other winding
++			const float q[4][3] = {
++				{ p[1][0], p[1][1], p[1][2] }, { p[0][0], p[0][1], p[0][2] },
++				{ p[3][0], p[3][1], p[3][2] }, { p[2][0], p[2][1], p[2][2] } };
++			const UV_INFO quv[4] = { uv[1], uv[0], uv[3], uv[2] };
++			AddQuad(&g_bk[chunk][0], q, quv, page, clut, 32, 4);
++		}
++	}
++}
++
++
 +static void BakeObject(PACKED_CELL_OBJECT* ppco, XZPAIR* nearCell, int cellx, int cellz)
 +{
 +	CELL_OBJECT co;
 +	QuickUnpackCellObject(ppco, nearCell, &co);
 +
 +	MODEL* model = g_fModel[co.type];
-+	if (!model || (model->shape_flags & SHAPE_FLAG_SPRITE))
++	if (!model)
 +		return;
++
++	if (model->shape_flags & SHAPE_FLAG_SPRITE)
++	{
++		BakeSprite(co, model, cellx, cellz);
++		return;
++	}
 +
 +	const int isTile = (model->shape_flags & (SHAPE_FLAG_WATER | SHAPE_FLAG_TILE)) || (model->flags2 & (MODEL_FLAG_PATH | MODEL_FLAG_GRASS));
 +	const int isWet = (model->shape_flags & SHAPE_FLAG_WATER) || (model->flags2 & MODEL_FLAG_GRASS);

@@ -34,7 +34,8 @@ void main()
 	p.z = (p.z + p.w) * 0.5;
 	gl_Position = p;
 
-	v_texcoord = vec4(float(a_uvc.x), float(a_uvc.y), 2.0, 0.0);
+	// flag 4: a sprite (a tree, a lamp): its transparent texels are dropped even where the far field keeps them
+	v_texcoord = vec4(float(a_uvc.x), float(a_uvc.y), 2.0, ((a_uvc.w & 4u) != 0u) ? 1.0 : 0.0);
 	uint cw = fx.farCol[a_uvc.z >> 2][a_uvc.z & 3u];
 	v_color = vec4(float(cw & 255u), float((cw >> 8) & 255u), float((cw >> 16) & 255u), 255.0) / 255.0;
 	v_color.xyz *= 2.0;

@@ -108,7 +108,7 @@ void main()
 		ivec2 t = ivec2(clamp(int(floor(v_texcoord.x)), 0, 255), clamp(int(floor(v_texcoord.y)), 0, 255));
 		int index = int(texelFetch(s_pageIdx, ivec3(t, layer), 0).r * 255.0 + 0.5);
 		vec4 c = texelFetch(s_pagePal, ivec2(index, layer * 64 + pal), 0);
-		if (c.rgb == vec3(0.0) && c.a == 0.0 && dropsTexel()) discard;   // the PSX's transparent texel
+		if (c.rgb == vec3(0.0) && c.a == 0.0 && (dropsTexel() || v_texcoord.w > 0.5)) discard;   // the PSX's transparent texel
 		c.w = 1.0 - c.w;
 		color = c;
 	} else if (pc.texMode == 4) {
