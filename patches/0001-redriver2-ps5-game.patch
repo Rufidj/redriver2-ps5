@@ -699,7 +699,7 @@ index e2a0da0..2249b9f 100644
  			
  			roadSeg = RoadInCell(&randomLoc);
 diff --git a/src_rebuild/Game/C/debris.c b/src_rebuild/Game/C/debris.c
-index d940cfd..5b0c162 100644
+index d940cfd..84228d8 100644
 --- a/src_rebuild/Game/C/debris.c
 +++ b/src_rebuild/Game/C/debris.c
 @@ -406,9 +406,18 @@ MATRIX leaf_mat;
@@ -881,6 +881,30 @@ index d940cfd..5b0c162 100644
  	POLY_FT4* poly;
  	SVECTOR vert[4];
  	int z;
+@@ -3692,7 +3772,11 @@ void DrawRainDrops(void)
+ 
+ 	GetSmokeDrift(&drift);
+ 
++#ifdef __PROSPERO__
++	bright = 118;		// brighter streaks
++#else
+ 	bright = 70;
++#endif
+ 
+ 	if (bright < 50)
+ 		bright = 50;
+@@ -3817,6 +3901,11 @@ void AddRainDrops(void)
+ 	if (wetness > 7000)
+ 		wetness = 7000;
+ 
++#ifdef __PROSPERO__
++	// the PS5 build drops four times as many as the PSX did: a downpour and not a drizzle
++	count *= 4;
++#endif
++
+ 	gte_SetRotMatrix(&camera_matrix);
+ 	gte_SetTransVector(&camera_position);
+ 
 diff --git a/src_rebuild/Game/C/dr2roads.c b/src_rebuild/Game/C/dr2roads.c
 index 0a32a04..16cf033 100644
 --- a/src_rebuild/Game/C/dr2roads.c
@@ -895,16 +919,19 @@ index 0a32a04..16cf033 100644
  		if (plane->surface - 16U < 16)
  			plane = EventSurface(pos, plane);
 diff --git a/src_rebuild/Game/C/draw.c b/src_rebuild/Game/C/draw.c
-index c9497d8..4e47aa8 100644
+index c9497d8..b51e7be 100644
 --- a/src_rebuild/Game/C/draw.c
 +++ b/src_rebuild/Game/C/draw.c
-@@ -1,4 +1,5 @@
+@@ -1,6 +1,8 @@
  #include "driver2.h"
 +#include <time.h>
  
  #include "draw.h"
++#include "players.h"
  #include "main.h"
-@@ -87,6 +88,10 @@ SVECTOR night_colours[4] =
+ #include "map.h"
+ #include "models.h"
+@@ -87,6 +89,10 @@ SVECTOR night_colours[4] =
  
  void* model_object_ptrs[MAX_DRAWN_BUILDINGS];
  void* model_tile_ptrs[MAX_DRAWN_TILES];
@@ -915,7 +942,7 @@ index c9497d8..4e47aa8 100644
  void* anim_obj_buffer[MAX_DRAWN_ANIMATING];
  void* spriteList[MAX_DRAWN_SPRITES];
  
-@@ -111,6 +116,9 @@ int setupYet = 0;
+@@ -111,6 +117,9 @@ int setupYet = 0;
  
  int gDrawDistance = PVS_CELL_COUNT * PVS_CELL_COUNT;
  
@@ -925,7 +952,7 @@ index c9497d8..4e47aa8 100644
  #ifndef PSX
  _pct& plotContext = *(_pct*)((u_char*)getScratchAddr(0) + 1024 - sizeof(_pct));	// orig offset: 0x1f800020
  #endif
-@@ -123,6 +131,12 @@ struct MVERTEX5x5
+@@ -123,6 +132,12 @@ struct MVERTEX5x5
  // [D] [T] [A]
  void addSubdivSpriteShadow(POLYFT4* src, SVECTOR* verts, int z)
  {
@@ -938,7 +965,7 @@ index c9497d8..4e47aa8 100644
  	int m;
  
  	m = 4;
-@@ -221,6 +235,9 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
+@@ -221,6 +236,9 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
  
  	list = sprites;
  	numShadows = 0;
@@ -948,7 +975,7 @@ index c9497d8..4e47aa8 100644
  
  	while (numFound--)
  	{
-@@ -240,12 +257,22 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
+@@ -240,12 +258,22 @@ void DrawSprites(PACKED_CELL_OBJECT** sprites, int numFound)
  			plotContext.colour = spriteColour;
  		}
  
@@ -971,7 +998,7 @@ index c9497d8..4e47aa8 100644
  		if (z < 1000)
  		{
  			POLYFT4* src;
-@@ -503,8 +530,14 @@ void DrawAllTheCars(int view)
+@@ -503,8 +531,14 @@ void DrawAllTheCars(int view)
  
  	cp = &car_data[MAX_CARS - 1];
  	do {
@@ -986,7 +1013,7 @@ index c9497d8..4e47aa8 100644
  		{
  			// XZ distance estimation
  			dx = ABS(camera_position.vx - cp->hd.where.t[0]);
-@@ -515,7 +548,11 @@ void DrawAllTheCars(int view)
+@@ -515,7 +549,11 @@ void DrawAllTheCars(int view)
  			else
  				dist = dx + dz / 2;
  
@@ -998,7 +1025,7 @@ index c9497d8..4e47aa8 100644
  			{
  				car_distance[num_cars_to_draw] = dx + dz;
  				cars_to_draw[num_cars_to_draw] = cp;
-@@ -554,11 +591,11 @@ void DrawAllTheCars(int view)
+@@ -554,11 +592,11 @@ void DrawAllTheCars(int view)
  		for (i = 0; i < num_cars_to_draw; i++)
  		{
  			// Don't exceed draw buffers
@@ -1012,7 +1039,7 @@ index c9497d8..4e47aa8 100644
  				gForceLowDetailCars = 1;
  
  			if (cars_to_draw[i]->controlType == CONTROL_TYPE_PLAYER)
-@@ -714,6 +751,7 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
+@@ -714,6 +752,7 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
  	{
  		ptype = polys->id & 31;
  
@@ -1020,7 +1047,7 @@ index c9497d8..4e47aa8 100644
  		// skip certain polygons
  		if (ptype != 11 && ptype != 21 && ptype != 23)
  		{
-@@ -992,10 +1030,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
+@@ -992,10 +1031,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
  
  		plotContext.ot = ot + zbias * 4;
  
@@ -1035,7 +1062,7 @@ index c9497d8..4e47aa8 100644
  
  		drawlimit = (int)(current->primptr - current->primtab);
  
-@@ -1057,6 +1099,7 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
+@@ -1057,6 +1100,7 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
  			continue;
  		}
  
@@ -1043,7 +1070,7 @@ index c9497d8..4e47aa8 100644
  		// perform transform
  		gte_ldv3(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
  		gte_rtpt();
-@@ -1273,6 +1316,96 @@ struct DrawMapData
+@@ -1273,6 +1317,96 @@ struct DrawMapData
  };
  
  // [D] [T]
@@ -1140,7 +1167,7 @@ index c9497d8..4e47aa8 100644
  void DrawMapPSX(int* comp_val)
  {
  	CELL_OBJECT* cop;
-@@ -1302,6 +1435,26 @@ void DrawMapPSX(int* comp_val)
+@@ -1302,6 +1436,36 @@ void DrawMapPSX(int* comp_val)
  
  	SetupDrawMapPSX();
  
@@ -1158,7 +1185,17 @@ index c9497d8..4e47aa8 100644
 +			extern int wetness;
 +			extern void GR_PS5_SetWet(float w);
 +			float wet = wetness / 5000.0f;
++			// "wet" weather has puddles without rain
++			if (gWeather == WEATHER_WET && wet < 0.75f)
++				wet = 0.75f;
 +			GR_PS5_SetWet(wet > 1.0f ? 1.0f : (wet < 0.0f ? 0.0f : wet));
++			{
++				// drops on the windscreen: raining, seen from inside the car
++				extern void GR_PS5_RainLens(float k);
++				GR_PS5_RainLens((gWeather == WEATHER_RAIN && player[0].cameraView == 2) ? 1.0f : 0.0f);
++				extern void GR_PS5_Raining(float k);
++				GR_PS5_Raining(gWeather == WEATHER_RAIN ? 1.0f : 0.0f);		// rings in the puddles only while it rains
++			}
 +		}
 +		GR_PS5_SetShadowParams(sunv->vx, sunv->vy, sunv->vz, &inv_camera_matrix.m[0][0], camera_position.vx, camera_position.vy, camera_position.vz);
 +	}
@@ -1167,7 +1204,7 @@ index c9497d8..4e47aa8 100644
  	// clean cell cache
  	ClearCopUsage();
  
-@@ -1330,8 +1483,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1330,8 +1494,12 @@ void DrawMapPSX(int* comp_val)
  		drawData.farClipLimit = farClip2Player;
  	else
  		drawData.farClipLimit = 60000;
@@ -1180,7 +1217,7 @@ index c9497d8..4e47aa8 100644
  #endif
  
  	drawData.tiles_found = 0;
-@@ -1342,6 +1499,16 @@ void DrawMapPSX(int* comp_val)
+@@ -1342,6 +1510,16 @@ void DrawMapPSX(int* comp_val)
  	
  	drawData.cellzpos = current_cell_z;
  	drawData.cellxpos = current_cell_x;
@@ -1197,7 +1234,7 @@ index c9497d8..4e47aa8 100644
  
  	PVS_ptr = CurrentPVS + 220;
  
-@@ -1356,12 +1523,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1356,12 +1534,25 @@ void DrawMapPSX(int* comp_val)
  	else
  		distScale = goFaster & 31;
  
@@ -1225,7 +1262,7 @@ index c9497d8..4e47aa8 100644
  		{
  			// clamped vis values
  			int vis_h = MIN(MAX(hloop, -9), PVS_CELL_COUNT / 2);
-@@ -1369,26 +1549,51 @@ void DrawMapPSX(int* comp_val)
+@@ -1369,26 +1560,51 @@ void DrawMapPSX(int* comp_val)
  
  			cellx = drawData.cellxpos + hloop;
  			cellz = drawData.cellzpos + vloop;
@@ -1278,7 +1315,7 @@ index c9497d8..4e47aa8 100644
  
  							if ((model->flags2 & MODEL_FLAG_ANIMOBJ) && drawData.anim_objs_found < MAX_DRAWN_ANIMATING)
  							{
-@@ -1452,7 +1657,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1452,7 +1668,12 @@ void DrawMapPSX(int* comp_val)
  								}
  
  								if (drawData.tiles_found < MAX_DRAWN_TILES)
@@ -1291,7 +1328,7 @@ index c9497d8..4e47aa8 100644
  							}
  							else
  							{
-@@ -1523,6 +1733,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1523,6 +1744,25 @@ void DrawMapPSX(int* comp_val)
  	PrintString(tempBuf, 10, 120);
  #endif
  
@@ -1574,7 +1611,7 @@ index d62f17e..e60e722 100644
  
  	homepath = getenv(HOME_ENV); // "USERPROFILE"
 diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
-index 91d8bb8..10792d8 100644
+index 91d8bb8..06b7fe3 100644
 --- a/src_rebuild/Game/C/main.c
 +++ b/src_rebuild/Game/C/main.c
 @@ -832,6 +832,12 @@ int numInactiveCars = 0;
@@ -1607,7 +1644,7 @@ index 91d8bb8..10792d8 100644
  					break;
  			}
  		}
-@@ -1537,6 +1543,166 @@ void CheckForPause(void)
+@@ -1537,6 +1543,202 @@ void CheckForPause(void)
  	}
  }
  
@@ -1632,6 +1669,9 @@ index 91d8bb8..10792d8 100644
 +static INTERP_CAR s_curCar[MAX_CARS];
 +static VECTOR s_prevCamPos, s_curCamPos, s_initCamPos;
 +static SVECTOR s_initCamAng;
++// the camera's three matrices as InitCamera leaves them: the in-car view builds them from the car's own matrix, so they cannot be
++// rebuilt from angles; the interpolated picture takes the middle of the last two
++static MATRIX s_initMat[3], s_prevMat[3];
 +static SVECTOR s_prevCamAng, s_curCamAng;
 +static int s_havePrevCam = 0;
 +static int s_interpPending = 0;
@@ -1688,7 +1728,34 @@ index 91d8bb8..10792d8 100644
 +			camera_angle.vx = (s_prevCamAng.vx + s_curCamAng.vx) / 2;
 +			camera_angle.vy = InterpLerpAngle(s_prevCamAng.vy, s_curCamAng.vy);
 +			camera_angle.vz = (s_prevCamAng.vz + s_curCamAng.vz) / 2;
-+			BuildWorldMatrix();
++
++			// the matrices: halfway between the two cameras'
++			{
++				int mi, i2, j2, big = 0;
++				MATRIX* dst[3] = { &inv_camera_matrix, &camera_matrix, &face_camera };
++				for (mi = 0; mi < 3; mi++)
++					for (i2 = 0; i2 < 3; i2++)
++						for (j2 = 0; j2 < 3; j2++)
++						{
++							const int d = s_initMat[mi].m[i2][j2] - s_prevMat[mi].m[i2][j2];
++							if (ABS(d) > big)
++								big = ABS(d);
++						}
++
++				// a cut between two cameras (or a flip of the view) is shown as it is
++				if (big < 1800)
++				{
++					for (mi = 0; mi < 3; mi++)
++						for (i2 = 0; i2 < 3; i2++)
++							for (j2 = 0; j2 < 3; j2++)
++								dst[mi]->m[i2][j2] = (short)((s_initMat[mi].m[i2][j2] + s_prevMat[mi].m[i2][j2]) / 2);
++				}
++				else
++				{
++					camera_position = s_curCamPos;
++					camera_angle = s_curCamAng;
++				}
++			}
 +		}
 +	}
 +
@@ -1760,6 +1827,9 @@ index 91d8bb8..10792d8 100644
 +{
 +	s_initCamPos = camera_position;
 +	s_initCamAng = camera_angle;
++	s_initMat[0] = inv_camera_matrix;
++	s_initMat[1] = camera_matrix;
++	s_initMat[2] = face_camera;
 +}
 +
 +// the camera of the step just drawn is the "previous" one of the next step
@@ -1767,6 +1837,9 @@ index 91d8bb8..10792d8 100644
 +{
 +	s_prevCamPos = s_initCamPos;
 +	s_prevCamAng = s_initCamAng;
++	s_prevMat[0] = s_initMat[0];
++	s_prevMat[1] = s_initMat[1];
++	s_prevMat[2] = s_initMat[2];
 +	s_havePrevCam = 1;
 +}
 +#endif
@@ -1774,7 +1847,7 @@ index 91d8bb8..10792d8 100644
  int gMultiStep = 0;
  
  // [D] [T]
-@@ -1551,9 +1717,44 @@ void State_GameLoop(void* param)
+@@ -1551,9 +1753,44 @@ void State_GameLoop(void* param)
  		return;
  	}
  
@@ -1819,7 +1892,7 @@ index 91d8bb8..10792d8 100644
  	UpdatePadData();
  	CheckForPause();
  
-@@ -1588,12 +1789,35 @@ void State_GameLoop(void* param)
+@@ -1588,12 +1825,35 @@ void State_GameLoop(void* param)
  	}
  #else
  	cnt = FastForward ? 7 : 1;
@@ -1855,7 +1928,7 @@ index 91d8bb8..10792d8 100644
  	
  	if (game_over)
  		SetState(STATE_GAMECOMPLETE);
-@@ -1606,17 +1830,40 @@ int ObjectDrawnValue = 0;
+@@ -1606,17 +1866,40 @@ int ObjectDrawnValue = 0;
  // [D] [T]
  void DrawGame(void)
  {
@@ -1898,7 +1971,7 @@ index 91d8bb8..10792d8 100644
  		RenderGame2(0);
  		SwapDrawBuffers2(0);
  
-@@ -1633,6 +1880,19 @@ void DrawGame(void)
+@@ -1633,6 +1916,19 @@ void DrawGame(void)
  		PsyX_EndScene();
  #endif
  
@@ -1918,7 +1991,7 @@ index 91d8bb8..10792d8 100644
  	FrameCnt++;
  }
  
-@@ -1826,7 +2086,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1826,7 +2122,6 @@ int redriver2_main(int argc, char** argv)
  	SetVideoMode(video_mode);
  
  	CdInit();
@@ -1926,7 +1999,7 @@ index 91d8bb8..10792d8 100644
  
  	SpuInit();
  	InitGeom();
-@@ -1837,7 +2096,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1837,7 +2132,6 @@ int redriver2_main(int argc, char** argv)
  	InitControllers();
  	Init_FileSystem();
  	InitSound();
@@ -1934,7 +2007,7 @@ index 91d8bb8..10792d8 100644
  	// [A] REDRIVER 2 version auto-detection
  	// this is the only difference between the files on CD
  #ifdef DEMO_VERSION
-@@ -1860,6 +2118,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1860,6 +2154,7 @@ int redriver2_main(int argc, char** argv)
  	{
  		char str[320];
  		sprintf(str, "Cannot initialize REDRIVER2\n\nGame files not found by folder '%s'\n", gDataFolder);
@@ -1942,7 +2015,7 @@ index 91d8bb8..10792d8 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", str, NULL);
  		return -1;
  	}
-@@ -1867,6 +2126,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1867,6 +2162,7 @@ int redriver2_main(int argc, char** argv)
  	// init language
  	if (!InitStringMng())
  	{
@@ -1950,7 +2023,7 @@ index 91d8bb8..10792d8 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", "Unable to load language files!\n\nSee console for details", NULL);
  		return -1;
  	}
-@@ -2221,7 +2481,27 @@ void RenderGame2(int view)
+@@ -2221,7 +2517,27 @@ void RenderGame2(int view)
  	int notInDreaAndStevesEvilLair;
  
  	CurrentPlayerView = view;
@@ -1964,7 +2037,7 @@ index 91d8bb8..10792d8 100644
 +	else if (gInterpPhase == 1)
 +		InterpSaveCamState(view);
 +
-+	InitCamera(&player[view]);
+ 	InitCamera(&player[view]);
 +	InterpNoteCamera();
 +
 +	if (gInterpPhase == 1)
@@ -1973,12 +2046,12 @@ index 91d8bb8..10792d8 100644
 +		pauseflag = 1;		// nothing advances while the interpolated picture is drawn
 +	}
 +#else
- 	InitCamera(&player[view]);
++	InitCamera(&player[view]);
 +#endif
  
  #ifndef PSX
  	int screenW, screenH;
-@@ -2371,6 +2651,35 @@ void RenderGame2(int view)
+@@ -2371,6 +2687,35 @@ void RenderGame2(int view)
  	gNumDlights = 0;
  #endif
  
@@ -2684,7 +2757,7 @@ index c8e9721..6efde89 100644
  	
  	if (gPlaying == 0 || g_wavData == NULL)
 diff --git a/src_rebuild/Game/dr2limits.h b/src_rebuild/Game/dr2limits.h
-index 5a87b50..729b50a 100644
+index 5a87b50..6a589c6 100644
 --- a/src_rebuild/Game/dr2limits.h
 +++ b/src_rebuild/Game/dr2limits.h
 @@ -17,7 +17,7 @@
@@ -2708,6 +2781,18 @@ index 5a87b50..729b50a 100644
  #define MAX_EXPLOSION_OBJECTS	5
  #define MAX_THROWN_BOMBS		5
  #define MAX_MOTION_CAPTURE		24
+@@ -80,7 +80,11 @@
+ #define MAX_DAMAGED_LAMPS		5
+ #define MAX_SMASHED_OBJECTS		8
+ #define MAX_LAMP_STREAKS		21
++#ifdef __PROSPERO__
++#define MAX_RAIN_DROPS			720
++#else
+ #define MAX_RAIN_DROPS			180
++#endif
+ 
+ // driving games limit
+ #define MAX_SMASHED_CONES		6
 diff --git a/src_rebuild/Game/dr2locale.h b/src_rebuild/Game/dr2locale.h
 index 1e1449a..b68f6bf 100644
 --- a/src_rebuild/Game/dr2locale.h

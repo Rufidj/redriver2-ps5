@@ -17,6 +17,8 @@ layout(set = 1, binding = 0) uniform Fx {
 	int shadowOn;
 	float skyH, farOfsX, farOfsY;   // skyH: the GTE projection plane distance (view rays, far field); far ofs: the GTE screen offset
 	uvec4 farCol[9];                // the far field's colours: 0..31 lit walls, 32 combo, 33 ground
+	vec4 screenInfo;                // render target width and height, then spare
+	vec4 camInfo;                   // camera world x, z, time in seconds, windscreen drops
 } fx;
 
 layout(push_constant) uniform PC {

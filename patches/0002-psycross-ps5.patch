@@ -132,7 +132,7 @@ index b924865..863a545 100644
  #define P_LEN		3		// 3 longs
  
 diff --git a/src/PsyX_main.cpp b/src/PsyX_main.cpp
-index f558b40..1e17294 100644
+index f558b40..765ce27 100644
 --- a/src/PsyX_main.cpp
 +++ b/src/PsyX_main.cpp
 @@ -17,6 +17,7 @@
@@ -154,7 +154,19 @@ index f558b40..1e17294 100644
  			
  		}
  	}
-@@ -377,7 +382,11 @@ FILE* g_logStream = NULL;
+@@ -257,7 +262,11 @@ static void PsyX_Sys_InitialiseInput()
+ 	g_cfg_controllerMapping.gc_dpad_left = SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+ 	g_cfg_controllerMapping.gc_dpad_right = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+ 
++#ifdef __PROSPERO__
++	g_cfg_controllerMapping.gc_select = SDL_CONTROLLER_BUTTON_TOUCHPAD;	// the DualSense has no Select: its touchpad button is it (camera)
++#else
+ 	g_cfg_controllerMapping.gc_select = SDL_CONTROLLER_BUTTON_BACK;
++#endif
+ 	g_cfg_controllerMapping.gc_start = SDL_CONTROLLER_BUTTON_START;
+ 
+ 	g_cfg_controllerMapping.gc_axis_left_x = SDL_CONTROLLER_AXIS_LEFTX | CONTROLLER_MAP_FLAG_AXIS;
+@@ -377,7 +386,11 @@ FILE* g_logStream = NULL;
  void PsyX_Log_Initialise()
  {
  	char appLogFilename[128];
@@ -166,7 +178,7 @@ index f558b40..1e17294 100644
  
  	g_logStream = fopen(appLogFilename, "wb");
  
-@@ -547,7 +556,7 @@ void PrintMessageToOutput(SpewType_t spewtype, char const* pMsgFormat, va_list a
+@@ -547,7 +560,7 @@ void PrintMessageToOutput(SpewType_t spewtype, char const* pMsgFormat, va_list a
  #endif
  
  	if(g_logStream)
@@ -175,7 +187,7 @@ index f558b40..1e17294 100644
  }
  
  void PsyX_Log(const char* fmt, ...)
-@@ -623,7 +632,12 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
+@@ -623,7 +636,12 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
  	SDL_SetHint(SDL_HINT_EMSCRIPTEN_ASYNCIFY, "0");
  #endif
  	
@@ -188,7 +200,7 @@ index f558b40..1e17294 100644
  	{
  		eprinterr("Failed to initialise SDL\n");
  		PsyX_Shutdown();
-@@ -662,12 +676,18 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
+@@ -662,12 +680,18 @@ void PsyX_Initialise(char* appName, int width, int height, int fullscreen)
  
  void PsyX_GetScreenSize(int* screenWidth, int* screenHeight)
  {
@@ -207,7 +219,7 @@ index f558b40..1e17294 100644
  }
  
  extern void PsyX_SetCursorRelative(int enable)
-@@ -787,7 +807,11 @@ char PsyX_BeginScene()
+@@ -787,7 +811,11 @@ char PsyX_BeginScene()
  		//		target 30fps, 50hz screen = 60hz interval (less tearing)
  		//		target 30fps, 60hz screen = 30hz interval (no tearing)
  		SDL_DisplayMode curMode;
@@ -219,7 +231,7 @@ index f558b40..1e17294 100644
  		{
  			const int mode_frequency = g_vmode == MODE_NTSC ? VBLANK_FREQUENCY_NTSC : VBLANK_FREQUENCY_PAL;
  			if (curMode.refresh_rate < mode_frequency)
-@@ -1008,13 +1032,16 @@ void PsyX_WaitForTimestep(int count)
+@@ -1008,13 +1036,16 @@ void PsyX_WaitForTimestep(int count)
  
  void PsyX_Exit()
  {
@@ -236,7 +248,7 @@ index f558b40..1e17294 100644
  
  	// quit vblank thread
  	if (g_intrThread)
-@@ -1027,8 +1054,10 @@ void PsyX_Shutdown()
+@@ -1027,8 +1058,10 @@ void PsyX_Shutdown()
  		SDL_DestroyMutex(g_intrMutex);
  	}
  
@@ -1235,7 +1247,7 @@ index 8d11166..943a97b 100644
  	return 0;
  }
 diff --git a/src/render/PsyX_render.cpp b/src/render/PsyX_render.cpp
-index 9324471..480583b 100644
+index 9324471..6e8319c 100644
 --- a/src/render/PsyX_render.cpp
 +++ b/src/render/PsyX_render.cpp
 @@ -10,6 +10,134 @@
@@ -1908,9 +1920,9 @@ index 9324471..480583b 100644
  		// these constants below are guessed
  		const float perspectiveFOV = 0.9265f;
 +		#ifdef __PROSPERO__
- 		const float perspectiveZNear = 0.25f;
-+#else
 +		const float perspectiveZNear = 0.25f;
++#else
+ 		const float perspectiveZNear = 0.25f;
 +#endif
 +		#ifdef __PROSPERO__
 +		const float perspectiveZFar = 6000.0f;	// map view goes far beyond the original 128k units
@@ -1961,7 +1973,7 @@ index 9324471..480583b 100644
  	glFlush();
  #endif
  
-@@ -1706,10 +2168,1025 @@ void GR_UpdateVRAM()
+@@ -1706,10 +2168,1028 @@ void GR_UpdateVRAM()
  #endif
  }
  
@@ -2264,6 +2276,9 @@ index 9324471..480583b 100644
 +}
 +
 +// wetness of the roads, 0..1 (the game's rain level)
++void GR_PS5_RainLens(float) {}   // the OpenGL title has no windscreen drops
++void GR_PS5_Raining(float) {}
++
 +void GR_PS5_SetWet(float w)
 +{
 +	if (!g_shadowProg || !g_pgl_PU1F)
@@ -2987,7 +3002,7 @@ index 9324471..480583b 100644
  #endif
  
  	//glFinish();
-@@ -1875,6 +3352,12 @@ void GR_UpdateVertexBuffer(const GrVertex* vertices, int num_vertices)
+@@ -1875,6 +3355,12 @@ void GR_UpdateVertexBuffer(const GrVertex* vertices, int num_vertices)
  #endif
  }
  

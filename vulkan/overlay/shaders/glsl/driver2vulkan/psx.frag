@@ -96,6 +96,15 @@ vec4 nearestTextureSample(vec2 P) {
 	return t;
 }
 
+
+float hash21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+	vec2 i = floor(p), f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float fbm2(vec2 p) { return vnoise(p) * 0.55 + vnoise(p * 2.1) * 0.30 + vnoise(p * 4.3) * 0.15; }
+
 void main()
 {
 	if (pc.pass == 4 && v_shadowPos.y > intBitsToFloat(pc.cascade)) discard;   // below the water plane: not mirrored
@@ -276,11 +285,34 @@ void main()
 			}
 		}
 		float wetK = (N.y < -0.8) ? fx.wet : 0.0;
-		outc.rgb *= 1.0 - 0.3 * wetK;
+		// puddles: where a world-fixed noise rises above a level that falls as the ground gets wetter
+		float pud = 0.0;
+		if (wetK > 0.0) {
+			vec2 wp = v_shadowPos.xz + fx.camInfo.xy;
+			float nz = fbm2(wp * (1.0 / 1200.0));
+			float th = 0.80 - 0.17 * fx.wet;
+			pud = smoothstep(th, th + 0.07, nz) * (1.0 - smoothstep(14000.0, 36000.0, length(Wp)));
+		}
+		outc.rgb *= 1.0 - 0.3 * wetK - 0.28 * pud;
 		outc.rgb += color.rgb * acc * fx.lightStrength;
-		outc.rgb += spec * (wetK * fx.lightStrength * 3.0);
+		outc.rgb += spec * ((wetK + pud * 2.0) * fx.lightStrength * 3.0);
 		float fr = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0) * wetK;
 		outc.rgb += vec3(fx.fogR, fx.fogG, fx.fogB) * (fr * 0.7);
+		if (pud > 0.0) {
+			// a puddle is a little mirror: the horizon sky, stronger at a slant, with rings where drops land
+			float Fp = 0.12 + 0.75 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+			vec3 sky = vec3(fx.fogR, fx.fogG, fx.fogB) * 0.92;
+			vec2 wp2 = v_shadowPos.xz + fx.camInfo.xy;
+			vec2 cellp = wp2 / 110.0;
+			vec2 cid = floor(cellp);
+			float h = hash21(cid);
+			float age = fract(fx.camInfo.z * (0.6 + 0.5 * h) + h * 9.0);
+			vec2 ctr = vec2(0.25 + 0.5 * hash21(cid + 4.1), 0.25 + 0.5 * hash21(cid + 9.3));
+			float rr = length(fract(cellp) - ctr) * 110.0;
+			float ring = sin(rr * 0.22 - age * 22.0) * exp(-rr * 0.035) * (1.0 - age) * step(0.45, h);
+			outc.rgb = mix(outc.rgb, sky, pud * Fp * 0.85);
+			outc.rgb += vec3(0.10) * ring * pud * fx.screenInfo.w;   // only while it rains
+		}
 	}
 
 	if (fx.fogOn == 1 && pc.pass != 1 && v_is3D > 0.5 && v_fogDepth < 2000.0) {

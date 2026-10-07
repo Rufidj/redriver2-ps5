@@ -134,3 +134,7 @@ The logic of the game runs at 30 Hz. The Vulkan title draws every step twice, a 
 ## 11. Water
 
 Every level but Las Vegas gets the game's own sea (the "sea plane" the surface data falls back to) drawn under the world: the river of Chicago, the sea of Havana and Rio, the edge of the map. It is almost clear, with a stone bed seen through the surface. `water=0` in `[render]` turns it off; `waterReflect=1` also mirrors the far field in it (off by default: cars, pedestrians and what the game draws itself are not in the mirror).
+
+## 12. Rain and controller
+
+Rain: four times as many drops, puddles that grow with the wetness of the ground (mirror of the horizon, rings while it rains, none in "Wet" weather), a grey closer haze and drops on the windscreen in the in-car view. The pad's Select is the DualSense touchpad button (`select=touchpad` in `[controls_game]`): it changes the camera. The left stick steers (analog mode is on from the start).

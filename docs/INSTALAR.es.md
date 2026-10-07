@@ -134,3 +134,7 @@ La logica del juego va a 30 Hz. El titulo Vulkan dibuja cada paso dos veces, una
 ## 11. Agua
 
 Todos los niveles menos Las Vegas dibujan bajo el mundo el mar del propio juego (el "plano de mar" al que cae la informacion de superficies): el rio de Chicago, el mar de La Habana y de Rio, el borde del mapa. Es casi transparente, con un fondo de piedra visto a traves. `water=0` en `[render]` lo apaga; `waterReflect=1` ademas refleja el campo lejano (apagado por defecto: los coches, los peatones y lo que dibuja el propio juego no salen en el espejo).
+
+## 12. Lluvia y mando
+
+Lluvia: cuatro veces mas gotas, charcos que crecen con la humedad del suelo (espejo del horizonte, anillos mientras llueve, sin ellos con tiempo "Mojado"), una niebla gris mas cercana y gotas en el parabrisas con la camara interior. El Select del mando es el boton del panel tactil del DualSense (`select=touchpad` en `[controls_game]`): cambia de camara. El stick izquierdo gira (el modo analogico viene activado).

@@ -188,7 +188,8 @@ struct FxUBO {
 	int32_t shadowOn;
 	float skyH, farOfsX, farOfsY;
 	uint32_t farCol[36];
-	float screenW, screenH, reflOn, reflPad;   // the render target's size, and whether the water reflection is current
+	float screenW, screenH, reflOn, screenInfoW;
+	float camX, camZ, timeS, rainLens;          // the camera's world x and z (puddles are fixed to the world), the time, windscreen drops   // the render target's size, and whether the water reflection is current
 };
 static const uint32_t kFxStride = 4096;
 static_assert(sizeof(FxUBO) <= kFxStride, "FxUBO slot");
@@ -217,6 +218,7 @@ static const VkFormat kShadowFormat = VK_FORMAT_D32_SFLOAT;
 static bool g_shadowReady = false;
 
 static unsigned g_frameNo = 0;
+static float g_rainLens = 0.0f;   // windscreen drops (GR_PS5_RainLens)
 static size_t farChunkCount();
 static int g_traceDraws = -1;       // >= 0: tracing this frame's draws (armed by the file /app0/tracenow)
 extern "C" void GR_PS5_TraceNext() { if (g_traceDraws < 0) g_traceDraws = 0; }
@@ -890,7 +892,7 @@ int GR_InitialisePSX()
 	VkPipelineLayoutCreateInfo pli{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 	pli.setLayoutCount = 3; pli.pSetLayouts = sets; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pcr;
 	check(vkCreatePipelineLayout(H->device, &pli, nullptr, &g_pipeLayout), "pipelineLayout");
-	VkPushConstantRange ppc{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32 };
+	VkPushConstantRange ppc{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, 40 };
 	pli.setLayoutCount = 1; pli.pSetLayouts = &g_presentSetLayout; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &ppc;
 	check(vkCreatePipelineLayout(H->device, &pli, nullptr, &g_presentLayout), "presentLayout");
 
@@ -1086,9 +1088,10 @@ void GR_SwapWindow()
 		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	g_depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-	struct { float bloom, thr, ao; int mode; float pixel[2]; float bloomPixel[2]; } ppc = {
+	struct { float bloom, thr, ao; int mode; float pixel[2]; float bloomPixel[2]; float rain, time; } ppc = {
 		g_ps5ModOn ? g_cfg_ps5Bloom : 0.0f, 0.8f, g_ps5ModOn ? g_cfg_ps5SSAO : 0.0f, 0,
-		{ 1.0f / (float)g_windowWidth, 1.0f / (float)g_windowHeight }, { 1.0f / (float)g_bloomW, 1.0f / (float)g_bloomH } };
+		{ 1.0f / (float)g_windowWidth, 1.0f / (float)g_windowHeight }, { 1.0f / (float)g_bloomW, 1.0f / (float)g_bloomH },
+		g_ps5ModOn ? g_rainLens : 0.0f, (float)g_frameNo * (1.0f / 60.0f) };
 	if (ppc.bloom > 0.0f) {
 		// the bright parts of the picture averaged into a small texture (the glow is read from it below)
 		barrier(g_cmd, g_bloom.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1467,6 +1470,7 @@ static bool g_farPending = false;
 static uint32_t commitFx()
 {
 	if (g_projDirty) {
+		g_fx.timeS = (float)g_frameNo * (1.0f / 60.0f);
 		if (g_uboSlot >= kUboSlots) g_uboSlot = kUboSlots - 1;
 		memcpy(g_uboMap[g_slot] + (size_t)g_uboSlot * kFxStride, &g_fx, sizeof(FxUBO));
 		g_uboSlot++;
@@ -1645,6 +1649,7 @@ static void initEffects()
 // (4096 fixed point, view = M * (world - camera)).
 void GR_PS5_SetShadowParams(int sx, int sy, int sz, const short* m, int cx, int cy, int cz)
 {
+	g_fx.camX = (float)cx; g_fx.camZ = (float)cz;
 	float M[9];
 	for (int i = 0; i < 9; i++) M[i] = (float)m[i] / 4096.0f;
 	// world = M^T * view: the row-major M read as the columns of a mat3 is exactly M^T
@@ -1841,6 +1846,16 @@ void GR_PS5_SetFog(int skyR, int skyG, int skyB)
 	// cells -> shader units (2048 world units per cell, 128 units per shader unit)
 	g_fx.fogStart = g_cfg_ps5FogStart * 16.0f;
 	g_fx.fogEnd = g_cfg_ps5FogEnd * 16.0f;
+	// rain: a grey, closer haze
+	{
+		const float rk = g_fx.wet > 1.0f ? 1.0f : g_fx.wet;
+		const float grey = (g_fx.fogR + g_fx.fogG + g_fx.fogB) * (1.0f / 3.0f) * 0.92f;
+		g_fx.fogR += (grey - g_fx.fogR) * 0.6f * rk;
+		g_fx.fogG += (grey - g_fx.fogG) * 0.6f * rk;
+		g_fx.fogB += (grey - g_fx.fogB) * 0.6f * rk;
+		g_fx.fogStart *= 1.0f - 0.35f * rk;
+		g_fx.fogEnd *= 1.0f - 0.38f * rk;
+	}
 	g_fx.fogOn = 1;
 	g_projDirty = true;
 }
@@ -1852,6 +1867,18 @@ void GR_PS5_SetModOn(int on)
 	if (!on) { g_fx.fogOn = 0; g_fx.lightN = 0; }
 	g_fx.hdMask = HDMaskEff();
 	g_projDirty = true;
+}
+
+// drops on the windscreen (0..1): raining and seen from inside the car
+// raining right now (0/1): the puddles get rings only then
+void GR_PS5_Raining(float k)
+{
+	if (k != g_fx.screenInfoW) { g_fx.screenInfoW = k; g_projDirty = true; }
+}
+
+void GR_PS5_RainLens(float k)
+{
+	if (k != g_rainLens) { g_rainLens = k; g_fx.rainLens = k; g_projDirty = true; }
 }
 
 // wetness of the roads, 0..1 (the game's rain level)
