@@ -16,19 +16,24 @@ Tested on a PS5 with **firmware 9.00**, kstuff 1.13 and ShadowMountPlus (see [Cr
 | Area | State |
 | --- | --- |
 | Gameplay, menus, missions, save games, replays, sound, music | working |
-| Frame rate | **30 fps** (the game's own pace) at up to 4K internal, with every effect on, the GPU idle and ~8 ms of CPU a frame |
+| Frame rate | **60 fps**: the logic runs at the game's own 30 Hz and every step is drawn twice, a picture in between (cars and camera interpolated) and the real one; up to 4K internal with every effect on |
 | Real-time sun shadows | three cascades; cars, buildings, street objects, trees and pedestrians cast shadows |
 | Real-time lights | street lamps, traffic lights, car head and tail lights (the first cars' lights cast shadows too) |
 | Fog, wet roads, bloom, ambient occlusion | working, each switchable in the pause menu |
 | HD texture packs | working (optional, see [tools/hdtex](tools/hdtex/README.md)) |
 | **HD sky** | a panorama per city and moment of the day (dawn, day, dusk, night, rain), aligned with the game's sun ([tools/sky](tools/sky/README.md)) |
-| **Draw distance** | the **whole map** from any position: the area beyond the game's own range is drawn from static meshes ([docs/VULKAN.md](docs/VULKAN.md#the-far-field)) |
+| **Draw distance** | the **whole map** from any position: the area beyond the game's own range is drawn from static meshes, **trees, lamps and signs included** ([docs/VULKAN.md](docs/VULKAN.md#the-far-field)) |
+| **Traffic and life** | up to **48 cars** (40 of traffic, 16 of them parked; the original had 20) and up to 32 pedestrians at once; cars appear farther out and are drawn out to the far field's range |
+| **Water** | the game's own sea (river of Chicago, Havana and Rio, the edge of the map): almost clear, with a stone bed seen through the surface and a moving net of light; optional mirror of the far field |
+| **Rain** | four times the drops, puddles that grow with the wetness of the ground (a mirror of the horizon, rings while it rains), a grey closer haze and drops on the windscreen in the in-car view |
+| Controller | the DualSense: left stick steers (analog mode from the start), the touchpad button is Select (camera) |
+| Language | any of the game's five (`languageId` in `config.ini`) |
+| Save game | `save/config.dat` keeps your progress (`gFurthestMission`: 39 opens the four cities) |
 | Cut-scene videos (FMV) | MJPEG AVI, uploaded separately (about 1.3 GB) |
 | Title artwork, home-screen music | not included (derived from the game); the scripts build them from your own files |
 | Installable `.pkg` | not working (error `CE-100096-6` at launch); the title runs from a folder mounted by ShadowMountPlus |
 
-60 fps is possible (`frameInterval=1`) but the game's logic and physics advance one fixed step per frame, so it then runs at
-double speed; real 60 fps would need interpolated rendering.
+Pedestrians and particles still move at 30 Hz inside the 60 fps picture; the pause, cut-scenes, fades and two-player games draw at 30.
 
 **Full step-by-step guide: [docs/INSTALL.md](docs/INSTALL.md)** (en español: [docs/INSTALAR.es.md](docs/INSTALAR.es.md)).
 
@@ -108,7 +113,11 @@ Logs go to `/data/homebrew/PPSA00058/REDRIVER2.log`; saves and replays to `.../s
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `[render] frameInterval` | `2` | vblanks per game frame: `2` = 30 fps, `1` = 60 fps at double game speed |
+| `[render] frameInterval` | `2` | vblanks per game logic step: leave at `2` (30 Hz logic) |
+| `[render] interpolate` | `1` | `1` = 60 fps by drawing every step twice, `0` = plain 30 fps |
+| `[render] water` | `1` | the sea plane under the world (`0` = off) |
+| `[render] waterReflect`, `waterReflectDist` | `0`, `140000` | mirror the far field in the water (cars, pedestrians and what the game draws itself are not in it) |
+| `[controls_game] select` | `touchpad` | the DualSense has no Select: this button changes the camera |
 | `[render] farMesh` | `0` (`8` suggested) | regions around you drawn as static far-field meshes, `0` = off |
 | `[render] farMeshNear` | `26` | cells around you the game draws itself; the far field covers the rest |
 | `[render] farMeshCull` | `1` | back-face culling of the far field: `0` none (recommended), `1` clockwise, `2` counter-clockwise |
@@ -123,8 +132,8 @@ Logs go to `/data/homebrew/PPSA00058/REDRIVER2.log`; saves and replays to `.../s
 
 ## Known issues
 
-* The far field draws buildings and ground; **trees and other sprites are not drawn** beyond the game's own range, and the
-  far ground uses the game's low-detail tiles.
+* The far field draws buildings, ground and sprites as two crossed quads; the far ground uses the game's low-detail tiles.
+* Cars and pedestrians are not in the water's mirror; pedestrians and particles run at 30 Hz.
 * Where the game's own drawing ends (`farMeshNear`) the far field takes over with the game's low-detail models.
 * No `.pkg` (see above). The `LibProsperoPkg` attempt is described in `docs/NOTES.md`.
 * Debug logging and the in-place debugging files (`dumpnow`, `tracenow`) are still in.
