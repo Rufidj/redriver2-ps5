@@ -70,6 +70,9 @@ int g_cfg_farMesh = 0;          // [render] farMesh: regions around the camera b
 int g_cfg_farMeshNear = 26;     // [render] farMeshNear: cells around the camera left to the game's own drawing
 int g_cfg_farMeshDebug = 1;     // [render] farMeshDebug: 1 (default) = no texel is dropped on the far field: the LOD facades have transparent texels that left holes
 int g_cfg_farMeshCull = 1;      // [render] farMeshCull: 0 none, 1 clockwise front faces, 2 counter-clockwise
+int g_cfg_waterReflect = 0;    // [render] waterReflect: 1 = the far field mirrored in the water (off by default: objects the game draws itself are not in it)
+int g_cfg_waterReflectDist = 140000;   // [render] waterReflectDist: how far the mirrored chunks reach
+int g_cfg_water = 1;           // [render] water: the water plane under the world (0 = off)
 int g_cfg_hdSky = 1;           // [render] hdSky: the panorama sky of the city
 int g_cfg_frameInterval = 2;   // vblanks per game frame: 2 = 30 fps, 1 = 60 (config.ini, [render] frameInterval)
 extern "C" int g_cfg_interp;   // the game (main.c): 60 fps by drawing every logic step twice
@@ -83,6 +86,9 @@ static void readFrameInterval()
 		int v;
 		if (sscanf(line, " frameInterval = %d", &v) == 1 && v >= 1 && v <= 4) g_cfg_frameInterval = v;
 		if (sscanf(line, " hdSky = %d", &v) == 1) g_cfg_hdSky = v;
+		if (sscanf(line, " water = %d", &v) == 1) g_cfg_water = v;
+		if (sscanf(line, " waterReflect = %d", &v) == 1) g_cfg_waterReflect = v;
+		if (sscanf(line, " waterReflectDist = %d", &v) == 1) g_cfg_waterReflectDist = v;
 		if (sscanf(line, " interpolate = %d", &v) == 1) g_cfg_interp = v;
 		if (sscanf(line, " farMesh = %d", &v) == 1) g_cfg_farMesh = v;
 		if (sscanf(line, " farMeshNear = %d", &v) == 1) g_cfg_farMeshNear = v;
@@ -182,6 +188,7 @@ struct FxUBO {
 	int32_t shadowOn;
 	float skyH, farOfsX, farOfsY;
 	uint32_t farCol[36];
+	float screenW, screenH, reflOn, reflPad;   // the render target's size, and whether the water reflection is current
 };
 static const uint32_t kFxStride = 4096;
 static_assert(sizeof(FxUBO) <= kFxStride, "FxUBO slot");
@@ -198,6 +205,12 @@ static bool g_projDirty = true;   // any parameter changed: the next draw gets a
 static Image g_shadowImg, g_spotImg, g_hdImg;
 static VkSampler g_samplerShadow, g_samplerHD;
 static VkDescriptorSetLayout g_fxSetLayout;
+static Image g_reflColor, g_reflDepth;     // the water's reflection: the far field mirrored about the water plane
+static VkSampler g_samplerRefl = VK_NULL_HANDLE;
+static bool g_reflReady = false;
+static Image g_reflDummy;                  // what the reflection slot shows while the reflection itself is being drawn
+static VkDescriptorSet g_fxSetRefl;
+static VkPipeline g_farPipeRefl = VK_NULL_HANDLE;
 static VkDescriptorSet g_fxSet;
 static const int kSpotSize = 1024;
 static const VkFormat kShadowFormat = VK_FORMAT_D32_SFLOAT;
@@ -863,13 +876,13 @@ int GR_InitialisePSX()
 	lci.bindingCount = 3; lci.pBindings = pb;
 	check(vkCreateDescriptorSetLayout(H->device, &lci, nullptr, &g_presentSetLayout), "presentSetLayout");
 
-	VkDescriptorSetLayoutBinding eb[3]{};
-	for (int i = 0; i < 3; i++) {
+	VkDescriptorSetLayoutBinding eb[4]{};
+	for (int i = 0; i < 4; i++) {
 		eb[i].binding = i; eb[i].descriptorCount = 1;
 		eb[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		eb[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	}
-	lci.bindingCount = 3; lci.pBindings = eb;
+	lci.bindingCount = 4; lci.pBindings = eb;
 	check(vkCreateDescriptorSetLayout(H->device, &lci, nullptr, &g_fxSetLayout), "fxSetLayout");
 
 	VkDescriptorSetLayout sets[3] = { g_texSetLayout, g_frameSetLayout, g_fxSetLayout };
@@ -960,7 +973,7 @@ int GR_InitialisePSX()
 		VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
 		ai.descriptorPool = g_descPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &g_presentSetLayout;
 		check(vkAllocateDescriptorSets(H->device, &ai, &g_presentSet), "present set");
-		VkDescriptorImageInfo ii[3] = {
+		VkDescriptorImageInfo ii[4] = {
 			{ g_samplerLinear, g_color.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 			{ g_samplerNearest, g_depthSampleView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
 			{ g_samplerLinear, g_bloom.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
@@ -1447,6 +1460,7 @@ void GR_PopDebugLabel() {}
 static void drawSkyPass();
 static bool g_skyPending = false;
 static void drawFarPass();
+static void drawReflection();
 static bool g_farPending = false;
 
 // a new slot of the frame's parameters when anything changed since the last draw; the slot's dynamic offset
@@ -1561,8 +1575,27 @@ static void initEffects()
 	si.maxLod = 8.0f;
 	check(vkCreateSampler(H->device, &si, nullptr, &g_samplerHD), "hd sampler");
 
+	// the water reflection target: half the render target
+	createImage(g_reflColor, g_windowWidth / 2, g_windowHeight / 2, VK_FORMAT_R8G8B8A8_UNORM,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+	createImage(g_reflDepth, g_windowWidth / 2, g_windowHeight / 2, H->depthFormat,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+	{
+		VkSamplerCreateInfo ri2{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+		ri2.magFilter = ri2.minFilter = VK_FILTER_LINEAR;
+		ri2.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		ri2.addressModeU = ri2.addressModeV = ri2.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		check(vkCreateSampler(H->device, &ri2, nullptr, &g_samplerRefl), "reflection sampler");
+	}
+	createImage(g_reflDummy, 4, 4, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+	g_fx.screenW = (float)g_windowWidth; g_fx.screenH = (float)g_windowHeight;
+
 	// every image starts in the layout its descriptor names
 	VkCommandBuffer cmd = beginOneTime();
+	barrier(cmd, g_reflColor.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	barrier(cmd, g_reflDummy.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	barrierRange(cmd, g_shadowImg.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
 		VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, 0, 3);
 	barrierRange(cmd, g_spotImg.image, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
@@ -1574,18 +1607,30 @@ static void initEffects()
 	VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
 	ai.descriptorPool = g_descPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &g_fxSetLayout;
 	check(vkAllocateDescriptorSets(H->device, &ai, &g_fxSet), "fx set");
-	VkDescriptorImageInfo ii[3] = {
+	VkDescriptorImageInfo ii[4] = {
 		{ g_samplerShadow, g_shadowImg.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
 		{ g_samplerShadow, g_spotImg.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
 		{ g_samplerHD, g_hdImg.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ g_samplerRefl, g_reflColor.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
 	};
-	VkWriteDescriptorSet w[3]{};
-	for (int i = 0; i < 3; i++) {
+	VkWriteDescriptorSet w[4]{};
+	for (int i = 0; i < 4; i++) {
 		w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		w[i].dstSet = g_fxSet; w[i].dstBinding = i; w[i].descriptorCount = 1;
 		w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[i].pImageInfo = &ii[i];
 	}
-	vkUpdateDescriptorSets(H->device, 3, w, 0, nullptr);
+	vkUpdateDescriptorSets(H->device, 4, w, 0, nullptr);
+
+	// the same set with the dummy where the reflection is: the reflection pass cannot sample the image it draws into
+	check(vkAllocateDescriptorSets(H->device, &ai, &g_fxSetRefl), "fx set (reflection pass)");
+	VkDescriptorImageInfo iiR[4] = { ii[0], ii[1], ii[2], { g_samplerRefl, g_reflDummy.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
+	VkWriteDescriptorSet wR[4]{};
+	for (int i = 0; i < 4; i++) {
+		wR[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		wR[i].dstSet = g_fxSetRefl; wR[i].dstBinding = i; wR[i].descriptorCount = 1;
+		wR[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; wR[i].pImageInfo = &iiR[i];
+	}
+	vkUpdateDescriptorSets(H->device, 4, wR, 0, nullptr);
 
 	g_fx.shadowSize = (float)S;
 	g_fx.shadowStrength = g_cfg_ps5ShadowStrength;
@@ -2199,8 +2244,10 @@ static void farFlush()
 	g_farStage.clear();
 }
 
+static bool g_waterMade = false;
 void GR_PS5_FarClear(void)
 {
+	g_waterMade = false;
 	if (g_farChunks.empty()) return;
 	vkDeviceWaitIdle(H->device);
 	for (auto& c : g_farChunks) {
@@ -2241,6 +2288,29 @@ void GR_PS5_FarChunkSet(int key, int fmt, int ox, int oy, int oz, const FarVerte
 }
 
 void GR_PS5_FarFlush(void) { farFlush(); }
+
+// ---- water: one plane at the level's water height under the whole world. Where the ground has no geometry (the river
+// of Chicago, the edge of the map) it shows; everywhere else the ground hides it ----
+static int g_waterOn = 0;
+static float g_waterY = 0.0f;
+void GR_PS5_WaterSet(int on, float worldY)
+{
+	g_waterOn = on;
+	g_waterY = worldY;
+	if (on && !g_waterMade) {
+		const float R = 90000.0f;
+		const float c[4][2] = { { -R, -R }, { R, -R }, { R, R }, { -R, R } };
+		const int order[12] = { 0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2 };   // both windings: seen from above or below
+		FarVertex v[12];
+		for (int i = 0; i < 12; i++) {
+			v[i].x = c[order[i]][0]; v[i].y = 0.0f; v[i].z = c[order[i]][1];
+			v[i].page = 0; v[i].clut = 0; v[i].u = 0; v[i].v = 0; v[i].col = 32; v[i].flags = 8;
+		}
+		GR_PS5_FarChunkSet(-1, 0, 0, 0, 0, v, 12);
+		farFlush();
+		g_waterMade = true;
+	}
+}
 
 // one texture page of the level into the far field's store: 256x256 palette indices (0..15) and `npal` palettes of 16
 // colours (5551 as the PSX has them)
@@ -2298,7 +2368,7 @@ void GR_PS5_FarFrame(int camX, int camY, int camZ, const unsigned int* colours)
 		memcpy(g_fx.farCol, colours, sizeof(g_fx.farCol));
 		g_projDirty = true;
 	}
-	g_farPending = !g_farVisible.empty();
+	g_farPending = !g_farVisible.empty() || g_waterOn;
 }
 
 static void farBuildPipeline()
@@ -2348,13 +2418,87 @@ static void farBuildPipeline()
 	pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = &ds;
 	pi.pColorBlendState = &cb; pi.pDynamicState = &dy; pi.layout = g_pipeLayout;
 	check(vkCreateGraphicsPipelines(H->device, H->pipelineCache, 1, &pi, nullptr, &g_farPipe), "far pipeline");
+	// the mirrored picture reverses every triangle: the same pipeline without culling
+	rs.cullMode = VK_CULL_MODE_NONE;
+	check(vkCreateGraphicsPipelines(H->device, H->pipelineCache, 1, &pi, nullptr, &g_farPipeRefl), "far reflection pipeline");
 }
+
+// The water's reflection: every baked chunk near the camera, drawn mirrored about the water plane (seen from the camera's own
+// place) into a half size target, which the water shader samples. It runs inside the far pass, before the water is drawn.
+static void drawReflection()
+{
+	const float planeRel = g_waterY - (float)g_farCam[1];   // the plane, camera-relative (y points down)
+	g_fx.screenW = (float)g_color.w; g_fx.screenH = (float)g_color.h; g_fx.reflOn = (float)g_cfg_waterReflect; g_projDirty = true;
+	endRendering();
+	barrier(g_cmd, g_reflColor.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+	barrier(g_cmd, g_reflDepth.image, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT,
+		VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+		VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
+	VkRenderingAttachmentInfo ca{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+	ca.imageView = g_reflColor.view;
+	ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	ca.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	ca.clearValue.color = { { 0, 0, 0, 0 } };
+	VkRenderingAttachmentInfo da{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+	da.imageView = g_reflDepth.view;
+	da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	da.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	da.clearValue.depthStencil = { 1.0f, 0 };
+	VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+	ri.renderArea = { { 0, 0 }, { g_reflColor.w, g_reflColor.h } };
+	ri.layerCount = 1; ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+	ri.pDepthAttachment = &da; ri.pStencilAttachment = &da;
+	vkCmdBeginRendering(g_cmd, &ri);
+
+	VkViewport vp = g_viewport;
+	vp.x *= 0.5f; vp.y *= 0.5f; vp.width *= 0.5f; vp.height *= 0.5f;
+	vkCmdSetViewport(g_cmd, 0, 1, &vp);
+	VkRect2D sc{ { 0, 0 }, { g_reflColor.w, g_reflColor.h } };
+	vkCmdSetScissor(g_cmd, 0, 1, &sc);
+	vkCmdSetDepthBias(g_cmd, 0.0f, 0.0f, 0.0f);
+	vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_farPipeRefl);
+	const uint32_t dynOffset = commitFx();
+	VkDescriptorSet sets[3] = { g_vramSet, g_frameSet[g_slot], g_fxSetRefl };
+	vkCmdBindDescriptorSets(g_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 3, sets, 1, &dynOffset);
+	int planeBits; memcpy(&planeBits, &planeRel, 4);
+	unsigned drawn = 0;
+	for (auto& c : g_farChunks) {
+		if (c.key < 0) continue;
+		// only what can be seen in the water: the chunks within a radius of the camera
+		const double cx = (double)c.ox + 8192.0 - g_farCam[0], cz = (double)c.oz + 8192.0 - g_farCam[2];
+		if (cx * cx + cz * cz > (double)g_cfg_waterReflectDist * g_cfg_waterReflectDist) continue;
+		const float off[3] = { (float)((double)c.ox - g_farCam[0]), (float)((double)c.oy - g_farCam[1]), (float)((double)c.oz - g_farCam[2]) };
+		struct { int texMode; int bilinear; float tx, ty; int pass; int cascade; int cutout; int pad; } pc =
+			{ 5, g_cfg_bilinearFiltering, off[0], off[1], 4, planeBits, 2, 0 };
+		memcpy(&pc.pad, &off[2], 4);
+		vkCmdPushConstants(g_cmd, g_pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+		const VkDeviceSize zero = 0;
+		vkCmdBindVertexBuffers(g_cmd, 0, 1, &c.buf, &zero);
+		vkCmdDraw(g_cmd, c.count, 1, 0, 0);
+		drawn++;
+	}
+	vkCmdEndRendering(g_cmd);
+	barrier(g_cmd, g_reflColor.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+	{ static int rl = 0; if (rl < 4) { rl++; LOGF("water: reflection pass drew %u chunks (plane %.0f, camera %d %d %d, %zu chunks known)\n", drawn, planeRel, g_farCam[0], g_farCam[1], g_farCam[2], g_farChunks.size()); } }
+	g_pfFarDraws += drawn;
+	ensureRendering();   // the frame's own target again (its contents are kept)
+}
+
 
 static void drawFarPass()
 {
 	g_farPending = false;
-	if (g_farVisible.empty()) return;
+	if (g_farVisible.empty() && !g_waterOn) return;
 	if (!g_farPipe) farBuildPipeline();
+	if (g_waterOn && g_waterMade && g_cfg_waterReflect)
+		drawReflection();
 	vkCmdBindPipeline(g_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_farPipe);
 	vkCmdSetViewport(g_cmd, 0, 1, &g_viewport);
 	VkRect2D sc{ { 0, 0 }, { g_color.w, g_color.h } };
@@ -2364,6 +2508,22 @@ static void drawFarPass()
 	VkDescriptorSet sets[3] = { g_vramSet, g_frameSet[g_slot], g_fxSet };
 	vkCmdBindDescriptorSets(g_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_pipeLayout, 0, 3, sets, 1, &dynOffset);
 	unsigned drawn = 0, verts = 0;
+	if (g_waterOn && g_waterMade) {
+		for (auto& c : g_farChunks) {
+			if (c.key != -1) continue;
+			// centred on the camera, snapped to 4096 so the waves (periods that divide it) stay where they are
+			const int cx = (int)floor((double)g_farCam[0] / 4096.0) * 4096, cz = (int)floor((double)g_farCam[2] / 4096.0) * 4096;
+			const float off[3] = { (float)((double)cx - g_farCam[0]), g_waterY - (float)g_farCam[1], (float)((double)cz - g_farCam[2]) };
+			struct { int texMode; int bilinear; float tx, ty; int pass; int cascade; int cutout; int pad; } pc =
+				{ 6, (int)g_frameNo, off[0], off[1], g_pass, 0, 2, 0 };
+			memcpy(&pc.pad, &off[2], 4);
+			vkCmdPushConstants(g_cmd, g_pipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+			const VkDeviceSize zero = 0;
+			vkCmdBindVertexBuffers(g_cmd, 0, 1, &c.buf, &zero);
+			vkCmdDraw(g_cmd, c.count, 1, 0, 0);
+			break;
+		}
+	}
 	for (int key : g_farVisible) {
 		for (auto& c : g_farChunks) {
 			if (c.key != key) continue;

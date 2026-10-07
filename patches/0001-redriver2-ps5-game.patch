@@ -3041,10 +3041,10 @@ index e66519f..6f55a62 100644
  // FMV main function
 diff --git a/src_rebuild/Game/C/farmesh.c b/src_rebuild/Game/C/farmesh.c
 new file mode 100644
-index 0000000..f4e881f
+index 0000000..f40c1fe
 --- /dev/null
 +++ b/src_rebuild/Game/C/farmesh.c
-@@ -0,0 +1,538 @@
+@@ -0,0 +1,555 @@
 +// The far field of the PS5 mod: the map beyond the game's own drawing range, as static meshes.
 +//
 +// The PSX pipeline cannot reach far: the GTE saturates depth at 16 bits (~32 cells) and the game walks every cell and
@@ -3059,6 +3059,7 @@ index 0000000..f4e881f
 +#include "models.h"
 +#include "system.h"
 +#include "camera.h"
++#include "dr2roads.h"
 +#include "mission.h"
 +#include "cell.h"
 +#include "texture.h"
@@ -3495,6 +3496,19 @@ index 0000000..f4e881f
 +	return colour;
 +}
 +
++// ---- water: the game's own sea. Cells without surface data are the sea plane (GetSeaPlane: cars drown there); its height is
++// the level's water level ----
++extern void GR_PS5_WaterSet(int on, float worldY);
++extern int sdHeightOnPlane(VECTOR* pos, sdPlane* plane);
++extern int g_cfg_water;		// [render] water: the water plane under the world (0 = off)
++static float WaterWorldY(void)
++{
++	VECTOR p;
++	p.vx = p.vy = p.vz = 0;
++	// the world's y points down: the surface is at -height; a little lower so that the game's water tiles draw over it
++	return (float)(-sdHeightOnPlane(&p, GetSeaPlane())) + 12.0f;
++}
++
 +void FarMesh_Update(int camCellX, int camCellZ)
 +{
 +	if (g_cfg_farMesh <= 0 || regions_across <= 0 || g_CurrentLevelSpoolData == NULL || LoadingArea || LoadedArea < 0)
@@ -3510,6 +3524,9 @@ index 0000000..f4e881f
 +		BuildModels();
 +		g_dataReady = 1;
 +	}
++
++	// every level has a sea except the desert
++	GR_PS5_WaterSet(g_cfg_water && GameLevel != 2, WaterWorldY());
 +
 +	const int rx = camCellX / MAP_REGION_SIZE, rz = camCellZ / MAP_REGION_SIZE;
 +	const int regionsDown = cells_down / MAP_REGION_SIZE;

@@ -20,6 +20,7 @@ layout(set = 0, binding = 3) uniform sampler2D s_pagePal;        // their palett
 layout(set = 2, binding = 0) uniform sampler2DArrayShadow uShadowMap;
 layout(set = 2, binding = 1) uniform sampler2DArrayShadow uSpotMap;
 layout(set = 2, binding = 2) uniform sampler2DArray uHDTex;
+layout(set = 2, binding = 3) uniform sampler2D uRefl;                 // the water's reflection (the far field mirrored)
 
 const vec2 c_VRAMTexel = vec2(1.0 / 1024.0, 1.0 / 512.0);
 vec2 VRAM(vec2 uv) { return texture(s_texture, uv).rg; }
@@ -97,6 +98,7 @@ vec4 nearestTextureSample(vec2 P) {
 
 void main()
 {
+	if (pc.pass == 4 && v_shadowPos.y > intBitsToFloat(pc.cascade)) discard;   // below the water plane: not mirrored
 	vec4 color;
 	int hdKey = int(v_hdKey + 0.5);
 	vec4 hole = fx.hdHole[hdKey];
@@ -111,6 +113,87 @@ void main()
 		if (c.rgb == vec3(0.0) && c.a == 0.0 && (dropsTexel() || v_texcoord.w > 0.5)) discard;   // the PSX's transparent texel
 		c.w = 1.0 - c.w;
 		color = c;
+	} else if (pc.texMode == 6) {
+		// The water plane: almost clear. Under it an analytic bed (stone slabs, a net of light drifting on them) seen through the
+		// surface with refraction, so that it moves with the view; a faint cyan-green tint that grows with the way through; the
+		// mirrored city and sky on top by Fresnel. Everything sits on a world-fixed grid (periods that divide the plane's 4096
+		// snap) and fades out when a pixel covers a good part of a period, so distance gives a smooth sheet.
+		vec3 W = v_shadowPos.xyz;                     // camera-relative world position (the game's y points down)
+		float dist = length(W);
+		vec3 Vd = W / max(dist, 1.0);
+		float tm = float(pc.bilinear) * (1.0 / 60.0);
+		vec2 p = v_texcoord.xy;
+		vec2 fw = fwidth(p);
+		float foot = max(max(fw.x, fw.y), 0.0001);
+
+		// gentle swell for the normal
+		const vec2 dirs[3] = vec2[3](vec2(1.0, 0.25), vec2(-0.35, 1.0), vec2(0.8, -0.65));
+		const float lens[3] = float[3](2048.0, 1024.0, 512.0);
+		const float slopes[3] = float[3](0.008, 0.011, 0.009);
+		vec2 g = vec2(0.0);
+		for (int i = 0; i < 3; i++) {
+			vec2 d = normalize(dirs[i]);
+			float ph = dot(d, p) * (6.2831853 / lens[i]) + tm * (0.7 + 0.3 * float(i)) + float(i) * 1.7;
+			g += d * slopes[i] * cos(ph) * clamp(1.0 - foot / (lens[i] * 0.34), 0.0, 1.0);
+		}
+		vec3 N = normalize(vec3(-g.x, -1.0, -g.y));   // up is -y
+		float ndv = clamp(dot(-Vd, N), 0.0, 1.0);
+		vec3 Rf = reflect(Vd, N);
+		float F = clamp(0.02 + 0.95 * pow(1.0 - ndv, 4.0), 0.0, 1.0);
+
+		// the bed, 520 units down, where the refracted ray lands
+		vec3 Vr = refract(Vd, N, 1.0 / 1.33);
+		float bedDepth = 520.0;
+		float vy = max(Vr.y, 0.07);
+		vec2 bp = p + Vr.xz * (bedDepth / vy);
+		float bf = clamp(1.0 - foot * 2.5 / 400.0, 0.0, 1.0);
+		vec2 cell = bp / 1024.0;
+		vec2 fr = abs(fract(cell) - 0.5) * 2.0;
+		float mortar = smoothstep(0.95, 1.0, max(fr.x, fr.y)) * bf;
+		float spk = fract(sin(dot(floor(bp / 128.0), vec2(12.9898, 78.233))) * 43758.5453);
+		vec3 bed = vec3(0.34, 0.32, 0.27) * (0.88 + 0.22 * spk * bf) * (1.0 - 0.30 * mortar);
+		// light nets on the bed
+		float net = 0.0;
+		{
+			float f1 = clamp(1.0 - foot / (512.0 * 0.30), 0.0, 1.0);
+			float a1 = sin(dot(vec2(0.8, 0.6), bp) * (6.2831853 / 512.0) + tm * 0.55);
+			float b1 = sin(dot(vec2(-0.6, 0.8), bp) * (6.2831853 / 512.0) - tm * 0.45);
+			net += pow(clamp(1.0 - abs(a1 + b1) * 0.5, 0.0, 1.0), 7.0) * f1;
+			float f2 = clamp(1.0 - foot / (256.0 * 0.30), 0.0, 1.0);
+			float a2 = sin(dot(vec2(-0.9, 0.4), bp) * (6.2831853 / 256.0) - tm * 0.8);
+			float b2 = sin(dot(vec2(0.3, 0.95), bp) * (6.2831853 / 256.0) + tm * 0.7);
+			net += pow(clamp(1.0 - abs(a2 + b2) * 0.5, 0.0, 1.0), 7.0) * f2 * 0.8;
+		}
+		bed *= 1.0 + net * 0.55;
+
+		// almost clear: a slight cyan-green that builds with the way through
+		float path = bedDepth / vy;
+		vec3 absorb = vec3(0.00070, 0.00032, 0.00042);
+		vec3 tr = exp(-absorb * path);
+		vec3 tint = vec3(0.060, 0.150, 0.150);
+		vec3 wc = bed * tr + tint * (1.0 - tr);
+
+		// the mirror
+		vec3 hor = vec3(fx.fogR, fx.fogG, fx.fogB);
+		vec3 skyc = mix(hor, hor * vec3(0.62, 0.78, 1.10), pow(clamp(-Rf.y, 0.0, 1.0), 0.55));
+		vec3 Nv = N * fx.viewToWorld;
+		vec2 suv = gl_FragCoord.xy / fx.screenInfo.xy + vec2(Nv.x, Nv.y) * 0.03;
+		if (fx.screenInfo.z > 0.5) {
+			vec4 rc = texture(uRefl, clamp(suv, vec2(0.002), vec2(0.998)));
+			vec3 refl = mix(skyc, rc.rgb, rc.a);
+			wc = mix(wc, refl, clamp(0.10 + F * 0.80, 0.0, 0.9));
+		} else {
+			// no mirror: just the faintest sky at a grazing view
+			wc = mix(wc, skyc, F * 0.12);
+		}
+
+		// the sun's glint
+		vec3 L = (fx.shadowOn != 0) ? normalize(vec3(fx.lightVP[0][0][2], fx.lightVP[0][1][2], fx.lightVP[0][2][2])) : normalize(vec3(0.35, -0.8, 0.45));
+		if (L.y > 0.0) L = -L;
+		vec3 Hh = normalize(L - Vd);
+		float glint = pow(max(dot(N, Hh), 0.0), 260.0) * 9.0 + pow(max(dot(N, Hh), 0.0), 40.0) * 0.45;
+		wc += vec3(1.0, 0.93, 0.8) * glint * clamp(1.0 - dist / 60000.0, 0.0, 1.0) * (0.4 + 0.6 * F);
+		color = vec4(wc, 1.0);
 	} else if (pc.texMode == 4) {
 		color = texture(s_texture, v_texcoord.xy);
 	} else if (pc.texMode < 3 && pc.pass != 1 && ((fx.hdMask >> hdKey) & 1) != 0 && !inHole) {
@@ -126,7 +209,7 @@ void main()
 	if (pc.pass == 1 || pc.pass == 3) { fragColor = vec4(0.0); return; }
 	vec4 outc = (pc.texMode == 4) ? vec4(color.rgb, 1.0) : dither(color * v_color);
 
-	if (pc.pass == 2 && v_is3D > 0.5 && fx.shadowOn != 0) {
+	if (pc.pass == 2 && pc.texMode != 6 && v_is3D > 0.5 && fx.shadowOn != 0) {
 		float lit = 1.0;
 		int casc = -1;
 		vec3 sc = vec3(0.0);
@@ -154,7 +237,7 @@ void main()
 		if (fx.shadowDebug == 2) outc.rgb = vec3(lit);
 	}
 
-	if ((fx.lightN > 0 || fx.wet > 0.0) && pc.pass != 1 && v_is3D > 0.5) {
+	if ((fx.lightN > 0 || fx.wet > 0.0) && pc.pass != 1 && pc.pass != 4 && v_is3D > 0.5) {
 		vec3 Wp = v_shadowPos.xyz;
 		vec3 V = normalize(-Wp);
 		vec3 N = normalize(cross(dFdx(Wp), dFdy(Wp)));
@@ -203,6 +286,10 @@ void main()
 	if (fx.fogOn == 1 && pc.pass != 1 && v_is3D > 0.5 && v_fogDepth < 2000.0) {
 		float fogF = clamp((v_fogDepth - fx.fogStart) / (fx.fogEnd - fx.fogStart), 0.0, 1.0);
 		outc.rgb = mix(outc.rgb, vec3(fx.fogR, fx.fogG, fx.fogB), fogF);
+	}
+	if (pc.pass == 4) {
+		// the mirrored far field: only what is above the plane, opaque
+		outc.a = 1.0;
 	}
 	fragColor = outc;
 }

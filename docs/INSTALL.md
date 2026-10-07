@@ -130,3 +130,7 @@ section `[game]`: `languageId=0` English, `1` Italian, `2` German, `3` French, `
 ## 10. 60 fps
 
 The logic of the game runs at 30 Hz. The Vulkan title draws every step twice, a picture in between (cars and camera interpolated) and the real one, which makes 60 fps. Pedestrians and particles still move at 30 Hz. Switch it off with `interpolate=0` in `assets/config.ini`, section `[render]` (it is on by default). It is off by itself in pause, cutscenes, fades and with two players.
+
+## 11. Water
+
+Every level but Las Vegas gets the game's own sea (the "sea plane" the surface data falls back to) drawn under the world: the river of Chicago, the sea of Havana and Rio, the edge of the map. It is almost clear, with a stone bed seen through the surface. `water=0` in `[render]` turns it off; `waterReflect=1` also mirrors the far field in it (off by default: cars, pedestrians and what the game draws itself are not in the mirror).

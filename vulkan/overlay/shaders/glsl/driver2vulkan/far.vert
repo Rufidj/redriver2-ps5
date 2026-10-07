@@ -24,6 +24,13 @@ void main()
 	// the chunk's origin minus the camera, in world units, comes with the draw (the push constants' spare words)
 	vec3 off = vec3(pc.texelSize, intBitsToFloat(pc.pad));
 	vec3 d = a_pos + off;                       // camera-relative world position
+	vec3 dReal = d;
+	if (pc.pass == 4) {
+		// the water's reflection: the world mirrored about the plane, squeezed towards it. Seen from a bridge a true mirror
+		// puts the buildings far below the visible water; squeezed to about a third they land on it (as a lower camera would see them)
+		float pl = intBitsToFloat(pc.cascade);
+		d.y = pl + (pl - d.y);
+	}
 	vec3 V = d * fx.viewToWorld;                // the game's view space (viewToWorld is its transpose)
 	float zs = ((a_uvc.w & 2u) != 0u) ? (((a_uvc.w & 1u) != 0u) ? 1.005 : 0.995) : 1.0;   // ground layering, as Tile1x1
 	float Z = V.z / 128.0 * zs;
@@ -36,6 +43,7 @@ void main()
 
 	// flag 4: a sprite (a tree, a lamp): its transparent texels are dropped even where the far field keeps them
 	v_texcoord = vec4(float(a_uvc.x), float(a_uvc.y), 2.0, ((a_uvc.w & 4u) != 0u) ? 1.0 : 0.0);
+	if ((a_uvc.w & 8u) != 0u) v_texcoord = vec4(a_pos.x, a_pos.z, 2.0, 0.0);   // water: the plane's own coordinates (the waves' world-fixed grid)
 	uint cw = fx.farCol[a_uvc.z >> 2][a_uvc.z & 3u];
 	v_color = vec4(float(cw & 255u), float((cw >> 8) & 255u), float((cw >> 16) & 255u), 255.0) / 255.0;
 	v_color.xyz *= 2.0;
@@ -44,5 +52,5 @@ void main()
 	v_is3D = 1.0;
 	v_fogDepth = Z;
 	v_hdKey = 0.0;
-	v_shadowPos = vec4(d, 1.0);
+	v_shadowPos = vec4(dReal, 1.0);
 }

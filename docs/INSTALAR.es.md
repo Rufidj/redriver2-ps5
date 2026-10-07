@@ -130,3 +130,7 @@ Los textos del juego salen de `DRIVER2/LANG/*_GAME.LTXT` y `*_MISSION.LTXT` de t
 ## 10. 60 fps
 
 La logica del juego va a 30 Hz. El titulo Vulkan dibuja cada paso dos veces, una imagen intermedia (coches y camara interpolados) y la real, y asi salen 60 fps. Los peatones y las particulas siguen a 30 Hz. Se apaga con `interpolate=0` en `assets/config.ini`, seccion `[render]` (viene encendido). Se desactiva solo en pausa, cinematicas, fundidos y con dos jugadores.
+
+## 11. Agua
+
+Todos los niveles menos Las Vegas dibujan bajo el mundo el mar del propio juego (el "plano de mar" al que cae la informacion de superficies): el rio de Chicago, el mar de La Habana y de Rio, el borde del mapa. Es casi transparente, con un fondo de piedra visto a traves. `water=0` en `[render]` lo apaga; `waterReflect=1` ademas refleja el campo lejano (apagado por defecto: los coches, los peatones y lo que dibuja el propio juego no salen en el espejo).
