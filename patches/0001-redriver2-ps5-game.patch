@@ -619,10 +619,25 @@ index 15767f6..58697d2 100644
  extern PACKED_CELL_OBJECT * GetFirstPackedCop(int cellx, int cellz, CELL_ITERATOR *pci, int use_computed, int level = -1); // 0x00023BAC
  extern PACKED_CELL_OBJECT* GetNextPackedCop(CELL_ITERATOR* pci); // 0x0003F5F0
 diff --git a/src_rebuild/Game/C/civ_ai.c b/src_rebuild/Game/C/civ_ai.c
-index e2a0da0..7f95456 100644
+index e2a0da0..2249b9f 100644
 --- a/src_rebuild/Game/C/civ_ai.c
 +++ b/src_rebuild/Game/C/civ_ai.c
-@@ -1079,7 +1079,7 @@ int CheckChangeLanes(DRIVER2_STRAIGHT* straight, DRIVER2_CURVE* curve, int distA
+@@ -1,4 +1,14 @@
+ #include "driver2.h"
++#ifdef __PROSPERO__
++// the PS5 build draws the far field: cars live and spawn farther out (the ring is read by main.c's ping-in distance too)
++#define PINGIN_DIST_WANTED_MULT			(14)
++#define PINGIN_DIST_MULT		(12)
++#define PINGOUT_DIST			(36000)
++#else
++#define PINGIN_DIST_WANTED_MULT			(10)
++#define PINGIN_DIST_MULT		(8)
++#define PINGOUT_DIST			(24000)
++#endif
+ #include "civ_ai.h"
+ 
+ #include "system.h"
+@@ -1079,7 +1089,7 @@ int CheckChangeLanes(DRIVER2_STRAIGHT* straight, DRIVER2_CURVE* curve, int distA
  			segLen = straight->length;
  		}
  
@@ -631,6 +646,58 @@ index e2a0da0..7f95456 100644
  		
  		if (tryToPark)
  		{
+@@ -1632,7 +1642,7 @@ int CheckPingOut(CAR_DATA * cp)
+ 	dz = MainPlayer.spoolXZ->vz - cp->hd.where.t[2];
+ 	dist = dx * dx + dz * dz;
+ 
+-	if (dist > 24000 * 24000 && PingOutCar(cp))
++	if ((u_int)dist > (u_int)PINGOUT_DIST * (u_int)PINGOUT_DIST && PingOutCar(cp))
+ 		return 1;
+ 
+ 	if (requestStationaryCivCar == 1 && distFurthestCivCarSq < dist)
+@@ -1868,8 +1878,7 @@ int CreateStationaryCivCar(int direction, int orientX, int orientZ, LONGVECTOR4*
+ 	return -1;
+ }
+ 
+-#define PINGIN_DIST_WANTED_MULT			(10)
+-#define PINGIN_DIST_MULT		(8)
++
+ 
+ // [D] [T] [A] - some register is not properly decompiled
+ int PingInCivCar(int minPingInDist)
+@@ -2047,8 +2056,17 @@ int PingInCivCar(int minPingInDist)
+ 			else
+ 			{
+ 				angle = (cookieCount * ONE) / 44;
++#ifdef __PROSPERO__
++				// every try a different radius (16000..32000), so a road that runs straight ahead gets cars along its whole length
++				{
++					const int ringMult = 8 + (cookieCount * 5) % 9;
++					dx = RSIN(angle) * ringMult;
++					dz = RCOS(angle) * ringMult;
++				}
++#else
+ 				dx = RSIN(angle) * PINGIN_DIST_MULT;
+ 				dz = RCOS(angle) * PINGIN_DIST_MULT;
++#endif
+ 			}
+ 
+ 			// [A] make limo ping in closer and in right direction
+@@ -2059,8 +2077,14 @@ int PingInCivCar(int minPingInDist)
+ 			}
+ 			else
+ 			{
++#ifdef __PROSPERO__
++				// exact position on the ring (the original rounds to whole 2048 steps)
++				randomLoc.vx = baseLoc.vx + (dx >> 1);
++				randomLoc.vz = baseLoc.vz + (dz >> 1);
++#else
+ 				randomLoc.vx = baseLoc.vx + FIXEDH(dx) * 2048;
+ 				randomLoc.vz = baseLoc.vz + FIXEDH(dz) * 2048;
++#endif
+ 			}
+ 			
+ 			roadSeg = RoadInCell(&randomLoc);
 diff --git a/src_rebuild/Game/C/debris.c b/src_rebuild/Game/C/debris.c
 index d940cfd..5b0c162 100644
 --- a/src_rebuild/Game/C/debris.c
@@ -828,7 +895,7 @@ index 0a32a04..16cf033 100644
  		if (plane->surface - 16U < 16)
  			plane = EventSurface(pos, plane);
 diff --git a/src_rebuild/Game/C/draw.c b/src_rebuild/Game/C/draw.c
-index c9497d8..27d641b 100644
+index c9497d8..4e47aa8 100644
 --- a/src_rebuild/Game/C/draw.c
 +++ b/src_rebuild/Game/C/draw.c
 @@ -1,4 +1,5 @@
@@ -904,7 +971,34 @@ index c9497d8..27d641b 100644
  		if (z < 1000)
  		{
  			POLYFT4* src;
-@@ -554,11 +581,11 @@ void DrawAllTheCars(int view)
+@@ -503,8 +530,14 @@ void DrawAllTheCars(int view)
+ 
+ 	cp = &car_data[MAX_CARS - 1];
+ 	do {
++#ifdef __PROSPERO__
++		// beyond the game's own view (the PVS ends at ~10 cells) cars are still drawn as far as the far field goes
++		if (cp->controlType != CONTROL_TYPE_NONE &&
++			(PositionVisible((VECTOR*)cp->hd.where.t) || (ABS(camera_position.vx - cp->hd.where.t[0]) + ABS(camera_position.vz - cp->hd.where.t[2])) > 14000))
++#else
+ 		if (cp->controlType != CONTROL_TYPE_NONE && 
+ 			PositionVisible((VECTOR*)cp->hd.where.t))
++#endif
+ 		{
+ 			// XZ distance estimation
+ 			dx = ABS(camera_position.vx - cp->hd.where.t[0]);
+@@ -515,7 +548,11 @@ void DrawAllTheCars(int view)
+ 			else
+ 				dist = dx + dz / 2;
+ 
++#ifdef __PROSPERO__
++			if (dist < 36000)
++#else
+ 			if (dist < VIEW_DRAW_DISTANCE)
++#endif
+ 			{
+ 				car_distance[num_cars_to_draw] = dx + dz;
+ 				cars_to_draw[num_cars_to_draw] = cp;
+@@ -554,11 +591,11 @@ void DrawAllTheCars(int view)
  		for (i = 0; i < num_cars_to_draw; i++)
  		{
  			// Don't exceed draw buffers
@@ -918,7 +1012,7 @@ index c9497d8..27d641b 100644
  				gForceLowDetailCars = 1;
  
  			if (cars_to_draw[i]->controlType == CONTROL_TYPE_PLAYER)
-@@ -714,6 +741,7 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
+@@ -714,6 +751,7 @@ void PlotBuildingModel(MODEL* model, int rot, _pct* pc)
  	{
  		ptype = polys->id & 31;
  
@@ -926,7 +1020,7 @@ index c9497d8..27d641b 100644
  		// skip certain polygons
  		if (ptype != 11 && ptype != 21 && ptype != 23)
  		{
-@@ -992,10 +1020,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
+@@ -992,10 +1030,14 @@ int DrawAllBuildings(CELL_OBJECT** objects, int num_buildings)
  
  		plotContext.ot = ot + zbias * 4;
  
@@ -941,7 +1035,7 @@ index c9497d8..27d641b 100644
  
  		drawlimit = (int)(current->primptr - current->primtab);
  
-@@ -1057,6 +1089,7 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
+@@ -1057,6 +1099,7 @@ void PlotModelSubdivNxN(MODEL* model, int rot, _pct* pc, int n)
  			continue;
  		}
  
@@ -949,7 +1043,7 @@ index c9497d8..27d641b 100644
  		// perform transform
  		gte_ldv3(&srcVerts[polys->v0], &srcVerts[polys->v1], &srcVerts[polys->v3]);
  		gte_rtpt();
-@@ -1273,6 +1306,96 @@ struct DrawMapData
+@@ -1273,6 +1316,96 @@ struct DrawMapData
  };
  
  // [D] [T]
@@ -1046,7 +1140,7 @@ index c9497d8..27d641b 100644
  void DrawMapPSX(int* comp_val)
  {
  	CELL_OBJECT* cop;
-@@ -1302,6 +1425,26 @@ void DrawMapPSX(int* comp_val)
+@@ -1302,6 +1435,26 @@ void DrawMapPSX(int* comp_val)
  
  	SetupDrawMapPSX();
  
@@ -1073,7 +1167,7 @@ index c9497d8..27d641b 100644
  	// clean cell cache
  	ClearCopUsage();
  
-@@ -1330,8 +1473,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1330,8 +1483,12 @@ void DrawMapPSX(int* comp_val)
  		drawData.farClipLimit = farClip2Player;
  	else
  		drawData.farClipLimit = 60000;
@@ -1086,7 +1180,7 @@ index c9497d8..27d641b 100644
  #endif
  
  	drawData.tiles_found = 0;
-@@ -1342,6 +1489,16 @@ void DrawMapPSX(int* comp_val)
+@@ -1342,6 +1499,16 @@ void DrawMapPSX(int* comp_val)
  	
  	drawData.cellzpos = current_cell_z;
  	drawData.cellxpos = current_cell_x;
@@ -1103,7 +1197,7 @@ index c9497d8..27d641b 100644
  
  	PVS_ptr = CurrentPVS + 220;
  
-@@ -1356,12 +1513,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1356,12 +1523,25 @@ void DrawMapPSX(int* comp_val)
  	else
  		distScale = goFaster & 31;
  
@@ -1131,7 +1225,7 @@ index c9497d8..27d641b 100644
  		{
  			// clamped vis values
  			int vis_h = MIN(MAX(hloop, -9), PVS_CELL_COUNT / 2);
-@@ -1369,26 +1539,51 @@ void DrawMapPSX(int* comp_val)
+@@ -1369,26 +1549,51 @@ void DrawMapPSX(int* comp_val)
  
  			cellx = drawData.cellxpos + hloop;
  			cellz = drawData.cellzpos + vloop;
@@ -1184,7 +1278,7 @@ index c9497d8..27d641b 100644
  
  							if ((model->flags2 & MODEL_FLAG_ANIMOBJ) && drawData.anim_objs_found < MAX_DRAWN_ANIMATING)
  							{
-@@ -1452,7 +1647,12 @@ void DrawMapPSX(int* comp_val)
+@@ -1452,7 +1657,12 @@ void DrawMapPSX(int* comp_val)
  								}
  
  								if (drawData.tiles_found < MAX_DRAWN_TILES)
@@ -1197,7 +1291,7 @@ index c9497d8..27d641b 100644
  							}
  							else
  							{
-@@ -1523,6 +1723,25 @@ void DrawMapPSX(int* comp_val)
+@@ -1523,6 +1733,25 @@ void DrawMapPSX(int* comp_val)
  	PrintString(tempBuf, 10, 120);
  #endif
  
@@ -1349,32 +1443,41 @@ index d62f17e..e60e722 100644
  	char* homepath;
  
  	homepath = getenv(HOME_ENV); // "USERPROFILE"
-diff --git a/src_rebuild/Game/C/loadview.c b/src_rebuild/Game/C/loadview.c
-index 465eff0..0a20b15 100644
---- a/src_rebuild/Game/C/loadview.c
-+++ b/src_rebuild/Game/C/loadview.c
-@@ -170,7 +170,16 @@ void ShowLoadingScreen(char *screen_name, int effect, int loading_steps)
- 	PutDispEnv(&load_disp);
- 	PutDrawEnv(&load_draw);
- 
-+#ifdef __PROSPERO__
-+	{
-+		int n = Loadfile(screen_name, (char*)_other_buffer);
-+		unsigned cs = 0; int k;
-+		for (k = 20; k < 532; k++) cs += (unsigned char)_other_buffer[k];
-+		printInfo("loadscreen: '%s' read %d bytes, clut sum %u\n", screen_name, n, cs);
-+	}
-+#else
- 	Loadfile(screen_name, (char*)_other_buffer);
-+#endif
- 	LoadClut((u_long*)&_other_buffer[20], 320, 511);
- 
- 	DrawSync(0);
 diff --git a/src_rebuild/Game/C/main.c b/src_rebuild/Game/C/main.c
-index 91d8bb8..64a7f5c 100644
+index 91d8bb8..b765ed8 100644
 --- a/src_rebuild/Game/C/main.c
 +++ b/src_rebuild/Game/C/main.c
-@@ -1588,12 +1588,27 @@ void State_GameLoop(void* param)
+@@ -832,6 +832,12 @@ int numInactiveCars = 0;
+ 
+ VECTOR leadcar_pos;
+ 
++#ifdef __PROSPERO__
++#define CIV_PINGIN_MIN_DIST 23000
++#else
++#define CIV_PINGIN_MIN_DIST 15900
++#endif
++
+ // [D] [T]
+ void StepSim(void)
+ {
+@@ -905,14 +911,14 @@ void StepSim(void)
+ 			// it will use ping buffer
+ 			// checks are done internally
+ 			for (i = 0; i < 10; i++)
+-				PingInCivCar(15900);
++				PingInCivCar(CIV_PINGIN_MIN_DIST);
+ 		}
+ 		else if (numCivCars < maxCivCars && (NumPlayers == 1 || (NumPlayers == 2 && GameType == GAME_COPSANDROBBERS)))
+ 		{
+ 			// make 5 tries
+ 			for (i = 0; i < 5; i++)
+ 			{
+-				if (PingInCivCar(15900))
++				if (PingInCivCar(CIV_PINGIN_MIN_DIST))
+ 					break;
+ 			}
+ 		}
+@@ -1588,12 +1594,27 @@ void State_GameLoop(void* param)
  	}
  #else
  	cnt = FastForward ? 7 : 1;
@@ -1402,7 +1505,7 @@ index 91d8bb8..64a7f5c 100644
  	
  	if (game_over)
  		SetState(STATE_GAMECOMPLETE);
-@@ -1826,7 +1841,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1826,7 +1847,6 @@ int redriver2_main(int argc, char** argv)
  	SetVideoMode(video_mode);
  
  	CdInit();
@@ -1410,7 +1513,7 @@ index 91d8bb8..64a7f5c 100644
  
  	SpuInit();
  	InitGeom();
-@@ -1837,7 +1851,6 @@ int redriver2_main(int argc, char** argv)
+@@ -1837,7 +1857,6 @@ int redriver2_main(int argc, char** argv)
  	InitControllers();
  	Init_FileSystem();
  	InitSound();
@@ -1418,7 +1521,7 @@ index 91d8bb8..64a7f5c 100644
  	// [A] REDRIVER 2 version auto-detection
  	// this is the only difference between the files on CD
  #ifdef DEMO_VERSION
-@@ -1860,6 +1873,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1860,6 +1879,7 @@ int redriver2_main(int argc, char** argv)
  	{
  		char str[320];
  		sprintf(str, "Cannot initialize REDRIVER2\n\nGame files not found by folder '%s'\n", gDataFolder);
@@ -1426,7 +1529,7 @@ index 91d8bb8..64a7f5c 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", str, NULL);
  		return -1;
  	}
-@@ -1867,6 +1881,7 @@ int redriver2_main(int argc, char** argv)
+@@ -1867,6 +1887,7 @@ int redriver2_main(int argc, char** argv)
  	// init language
  	if (!InitStringMng())
  	{
@@ -1434,7 +1537,7 @@ index 91d8bb8..64a7f5c 100644
  		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ERROR!", "Unable to load language files!\n\nSee console for details", NULL);
  		return -1;
  	}
-@@ -2221,6 +2236,10 @@ void RenderGame2(int view)
+@@ -2221,6 +2242,10 @@ void RenderGame2(int view)
  	int notInDreaAndStevesEvilLair;
  
  	CurrentPlayerView = view;
@@ -1445,7 +1548,7 @@ index 91d8bb8..64a7f5c 100644
  	InitCamera(&player[view]);
  
  #ifndef PSX
-@@ -2371,6 +2390,35 @@ void RenderGame2(int view)
+@@ -2371,6 +2396,35 @@ void RenderGame2(int view)
  	gNumDlights = 0;
  #endif
  

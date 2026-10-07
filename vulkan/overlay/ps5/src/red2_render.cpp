@@ -1002,14 +1002,8 @@ static VkBuffer g_dumpBuf = VK_NULL_HANDLE;
 static VkDeviceMemory g_dumpMem = VK_NULL_HANDLE;
 static void* g_dumpMap = nullptr;
 // dumped when the file /app0/dumpnow exists (uploaded by FTP while the game runs); it is removed after
-static int g_loadDraws = 0;
 static bool dumpWanted(unsigned frame)
 {
-	{
-		static int next = 55, n = 0; static unsigned last = 0;
-		if (n < 12 && g_loadDraws >= next) { next += 60; n++; last = frame; return true; }
-		if (last && frame == last + 45) return true;
-	}
 	if (frame % 20) return false;
 	FILE* f = fopen("/app0/dumpnow", "rb");
 	if (!f) return false;
@@ -1377,6 +1371,9 @@ void GR_ReadVRAM(unsigned short* dst, int x, int y, int dst_w, int dst_h)
 void GR_StoreFrameBuffer(int x, int y, int w, int h)
 {
 	g_pfStore++;
+	// the picture lives in the 320 wide double buffer; a 640 wide display environment (left over from the previous screen)
+	// would otherwise overwrite the texture pages that start at x=320 (the loading screen's image and palette)
+	if (x < 320 && x + w > 320) w = 320 - x;
 	if (w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > VRAM_WIDTH || y + h > VRAM_HEIGHT) return;
 	openFrame();
 	endRendering();
@@ -1472,17 +1469,6 @@ void GR_DrawTriangles(int start_vertex, int triangles)
 			currentKind(), g_curTex, g_texMode, g_blend, g_depthTest, (int)g_prepassColour, g_stencilMode, triangles, start_vertex, g_inShadow ? 1 : (g_prepassKind ? 3 : g_pass));
 	}
 	if (g_traceDraws >= 0) g_traceDraws++;
-	{
-		static int s_diag2d = 0;
-		if (g_texMode == 1 && (int)(g_vtxMap[g_slot] + g_vtxBase + start_vertex)->clut == 32724) g_loadDraws++;
-		const GrVertex* v0 = g_vtxMap[g_slot] + g_vtxBase + start_vertex;
-		if (g_texMode == 1 && v0->scr_h < 100.0f && (int)v0->clut == 32724 && ((g_loadDraws >= 60 && g_loadDraws < 130 && g_loadDraws % 6 == 0) || s_diag2d < 4)) {
-			s_diag2d++;
-			LOGF("diag2d: mode=1 tex=%u tris=%d pos=(%.3f,%.3f) page=%.0f clut=%.0f uv=(%d,%d) bright=%d col=(%d,%d,%d,%d) blend=%d depth=%d hdMask=%x pass=%d cut=%d shadow=%d prepass=%d mod=%d n=%d vp=(%.0f,%.0f,%.0f,%.0f)\n",
-				g_curTex, triangles, v0->x, v0->y, v0->page, v0->clut, (int)v0->u, (int)v0->v, (int)v0->bright, (int)v0->r, (int)v0->g, (int)v0->b, (int)v0->a, g_blend, g_depthTest, (unsigned)g_fx.hdMask, g_pass, (int)g_cutout, (int)g_inShadow, (int)g_prepassKind, (int)g_ps5ModOn, g_loadDraws,
-				g_viewport.x, g_viewport.y, g_viewport.width, g_viewport.height);
-		}
-	}
 	flushState();
 	const uint32_t dynOffset = commitFx();
 	const TextureID tid = (g_curTex < g_tex.size() && g_tex[g_curTex].alive) ? g_curTex : kTexVram;

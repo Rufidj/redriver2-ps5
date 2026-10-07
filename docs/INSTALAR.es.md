@@ -120,3 +120,9 @@ fogEnd=250
 
 Tras una compilacion nueva, vuelve a subir (con el juego cerrado). `config.ini` solo se sube cuando lo cambias. Quita `farMesh` (o ponlo a `0`)
 para apagar el campo lejano.
+
+## 9. Idioma
+
+Los textos del juego salen de `DRIVER2/LANG/*_GAME.LTXT` y `*_MISSION.LTXT` de tu copia. El idioma se elige en `assets/config.ini`, seccion
+`[game]`: `languageId=0` ingles, `1` italiano, `2` aleman, `3` frances, `4` espanol. Las imagenes de los menus salen de los archivos del juego
+(`GFX/`, `FRONTEND.BIN`), asi que usa los de la misma version de idioma.

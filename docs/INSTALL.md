@@ -120,3 +120,9 @@ fogEnd=250
 
 After a new build, upload again (game closed). `config.ini` is only uploaded when you change it. Remove `farMesh` (or set it to
 `0`) to turn the far field off.
+
+## 9. Language
+
+The game's texts come from `DRIVER2/LANG/*_GAME.LTXT` / `*_MISSION.LTXT` of your own copy. Pick the language in `assets/config.ini`,
+section `[game]`: `languageId=0` English, `1` Italian, `2` German, `3` French, `4` Spanish. Menu pictures come from the game's own files
+(`GFX/`, `FRONTEND.BIN`), so use the files of the same language version.
